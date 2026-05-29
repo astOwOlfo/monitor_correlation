@@ -1,0 +1,152 @@
+data:
+    seed: {{ seed }}
+    train_files: {{ train_dataset_parquet_path }}
+    val_files: {{ validation_dataset_parquet_path }}
+    train_batch_size: {{ train_batch_size }}
+    max_prompt_length: {{ max_prompt_length }}
+    max_response_length: {{ max_completion_length }}
+    filter_overlong_prompts: true
+    truncation: error
+    shuffle: {{ data_shuffle | lower }}
+    prompt_key: prompt
+    reward_fn_key: data_source
+    val_batch_size: null
+    apply_chat_template_kwargs: {{ chat_template_kwargs }}
+    dataloader_num_workers: {{ dataloader_num_workers }}
+
+
+actor_rollout_ref:
+    model:
+        path: {{ model_path if model_path is not none else model_id }}
+        external_lib: src.train.verl.workers
+        lora_rank: {{ lora_rank }}
+        lora_alpha: {{ lora_alpha }}
+        target_modules: all-linear
+        use_remove_padding: true
+        enable_gradient_checkpointing: {{ enable_gradient_checkpointing }}
+        use_shm: true
+        use_fused_kernels: true
+        use_liger: false
+    actor:
+        strategy: fsdp2
+        optim:
+            optimizer: {{ "AdamW8bit" if optim == "adamw_8bit" else "AdamW" }}
+            optimizer_impl: {{ "bitsandbytes.optim" if optim == "adamw_8bit" else "torch.optim" }}
+            lr: {{ learning_rate }}
+            lr_warmup_steps_ratio: {{ 0.0 if warmup_ratio is none else warmup_ratio }}
+            lr_warmup_steps: {{ warmup_steps if warmup_steps is not none else -1 }}
+            lr_scheduler_type: {{ "cosine" if lr_scheduler_type == "cosine" else "constant" }}
+            weight_decay: {{ weight_decay }}
+            betas: [{{ adam_beta1 }}, {{ adam_beta2 }}]
+            clip_grad: {{ max_grad_norm }}
+        ppo_mini_batch_size: {{ mini_batch_size }}
+        ppo_micro_batch_size_per_gpu: {{ per_device_batch_size }}
+        use_dynamic_bsz: {{ use_dynamic_bsz }}
+        ppo_max_token_len_per_gpu: {{ ppo_max_token_len_per_gpu }}
+        use_kl_loss: true
+        kl_loss_coef: {{ beta }}
+        kl_loss_type: low_var_kl
+        fsdp_config:
+            fsdp_size: 1
+            param_offload: false
+            optimizer_offload: false
+            model_dtype: bfloat16
+            dtype: bfloat16
+        ulysses_sequence_parallel_size: 1
+        checkpoint:
+            save_contents: {{ checkpoint_save_contents }}
+            load_contents: {{ checkpoint_load_contents }}
+    rollout:
+        log_prob_micro_batch_size_per_gpu: {{ per_device_batch_size }}
+        tensor_model_parallel_size: 1 
+        name: {{ rollout_engine }}
+        mode: sync
+        gpu_memory_utilization: {{ gpu_memory_utilization }}
+        n: {{ num_generations }}
+        max_num_seqs: {{ max_num_seqs }}
+        max_model_len: {{ max_prompt_length + max_completion_length }}
+        max_num_batched_tokens: {{ max_num_batched_tokens }}
+        enable_chunked_prefill: false
+        enforce_eager: false
+        layered_summon: {{ layered_summon | lower }}
+        load_format: safetensors
+        dtype: bfloat16
+        temperature: {{ temperature }}
+        top_p: {{ top_p }}
+        calculate_log_probs: false
+        engine_kwargs:
+            vllm: {}
+            interp_vllm:
+                activation_cache:
+                    mode: {{ cache_activations_mode if cache_activations_mode is not none else 'null' }}
+                    layers: {{ cache_activations_layers if cache_activations_layers is not none else '[18]' }}
+                    position: {{ cache_activations_position }}
+                    probe_path: {{ cache_activations_probe_path if cache_activations_probe_path is not none else 'null' }}
+                    batch_size: {{ cache_activations_batch_size }}
+                    model: {{ cache_activations_model if cache_activations_model is not none else 'null' }}
+                    num_workers: {{ cache_activations_num_workers }}
+                    sync_lora: {{ cache_activations_sync_lora | lower }}
+                    debug_dump_token_ids: {{ cache_activations_debug_dump_token_ids | lower }}
+                    compare_with_worker: {{ cache_activations_compare_with_worker | lower }}
+                steering:
+                    enable: {{ 'true' if steering_path is not none else 'false' }}
+                    path: {{ steering_path if steering_path is not none else 'null' }}
+                    layer: {{ steering_layer if steering_layer is not none else 18 }}
+                    alpha: {{ steering_alpha }}
+                caft:
+                    enable: {{ 'true' if caft_path is not none else 'false' }}
+                    orthogonalize: {{ caft_orthogonalize }}
+                    path: {{ caft_path if caft_path is not none else 'null' }}
+                    layer: {{ caft_layer if caft_layer is not none else 18 }}
+                oracle:
+                    enable: {{ oracle_enabled | lower }}
+                    adapter_path: {{ oracle_adapter_path if oracle_adapter_path is not none else 'null' }}
+                    questions: {{ oracle_questions if oracle_questions is not none else '[]' }}
+                    act_layer: {{ oracle_act_layer if oracle_act_layer is not none else 18 }}
+                    injection_layer: {{ oracle_injection_layer }}
+                    steering_coefficient: {{ oracle_steering_coefficient }}
+                    batch_size: {{ oracle_batch_size }}
+                    sync_lora: {{ oracle_sync_lora | lower }}
+                    generation_kwargs: {{ oracle_generation_kwargs if oracle_generation_kwargs is not none else '{}' }}
+    ref:
+        log_prob_micro_batch_size_per_gpu: {{ per_device_batch_size }}
+        fsdp_config:
+            param_offload: false
+
+reward_model:
+    reward_kwargs: 
+        seed: {{ seed }}
+        reward_specs: {{ reward_funcs_kwargs }}
+
+algorithm:
+    use_kl_in_reward: false
+    kl_ctrl:
+        kl_coef: {{ beta }}
+    fill_nan_global: {{ fill_nan_global }}
+    screening_specs: {{ screening_funcs_kwargs }}
+    probe_loss:
+        enabled: {{ probe_loss_enabled | lower }}
+        probe_path: {{ probe_loss_path if probe_loss_path is not none else 'null' }}
+        layers: {{ probe_loss_layers if probe_loss_layers is not none else 'null' }}
+        coeff: {{ probe_loss_coeff }}
+        aggregation: {{ probe_loss_aggregation }}
+        retrain_freq: {{ probe_retrain_freq }}
+        retrain_dataset_path: {{ probe_retrain_dataset_path if probe_retrain_dataset_path is not none else 'null' }}
+
+trainer:
+    total_epochs: {{ total_epochs }}
+    total_training_steps: {{ max_steps }}
+    critic_warmup: 0
+    logger: ["console", "{{ report_to }}"]
+    project_name: {{ wandb_project }}
+    experiment_name: {{ run_name }}
+    n_gpus_per_node: {{ n_gpus }}
+    nnodes: 1
+    save_freq: {{ save_steps }}
+    test_freq: -1
+    default_local_dir: {{ output_dir }}/checkpoints
+    rollout_data_dir: {{ output_dir }}/rollouts
+    max_actor_ckpt_to_keep: null
+    max_actor_lora_to_keep: {{ save_total_limit }}
+    resume_mode: {{ resume_mode }}
+    {% if resume_from_path %}resume_from_path: {{ resume_from_path }}{% endif %}
