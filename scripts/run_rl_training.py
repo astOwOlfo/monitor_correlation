@@ -29,12 +29,7 @@ DEFAULT_STEPS = 400
 DEFAULT_SEED = 1
 DEFAULT_MONITOR_WEIGHT = 3.0 # Replace this with using the correctness weight from the env config
 
-# Actor micro-batches are sized in sequences, but memory scales with tokens: one backward
-# holds ~180 KiB/token of checkpointed activations for Qwen3-4B (36 layers x 2560 hidden x 2B).
-# 32 sequences x (1536 + 1536) was the largest budget known to fit on an 80GB card, so hold
-# that token budget fixed and let the sequence count fall out of the configured lengths --
-# otherwise raising max_completion_length silently multiplies the per-micro-batch footprint.
-MICRO_BATCH_TOKEN_BUDGET = 98304
+MICRO_BATCH_TOKEN_BUDGET = 65536
 DEFAULT_PER_DEVICE_BATCH_SIZE = 32 # Upper bound: the budget only ever caps this, never raises it
 
 
