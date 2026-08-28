@@ -29,6 +29,26 @@ DEFAULT_STEPS = 400
 DEFAULT_SEED = 1
 DEFAULT_MONITOR_WEIGHT = 3.0 # Replace this with using the correctness weight from the env config
 
+# Actor micro-batches are sized in sequences, but memory scales with tokens: one backward
+# holds ~180 KiB/token of checkpointed activations for Qwen3-4B (36 layers x 2560 hidden x 2B).
+# 32 sequences x (1536 + 1536) was the largest budget known to fit on an 80GB card, so hold
+# that token budget fixed and let the sequence count fall out of the configured lengths --
+# otherwise raising max_completion_length silently multiplies the per-micro-batch footprint.
+MICRO_BATCH_TOKEN_BUDGET = 98304
+DEFAULT_PER_DEVICE_BATCH_SIZE = 32 # Upper bound: the budget only ever caps this, never raises it
+
+
+def derive_per_device_batch_size(max_prompt_length: int, max_completion_length: int) -> int:
+    """Largest power-of-two micro-batch whose worst-case token count fits MICRO_BATCH_TOKEN_BUDGET.
+
+    Capped at DEFAULT_PER_DEVICE_BATCH_SIZE so short-context envs keep their existing sizing:
+    the budget is a ceiling, not a target. Powers of two keep the result a divisor of the
+    per-GPU mini batch (mini_batch_size * num_generations / n_gpus), which verl requires.
+    """
+    sequence_length = int(max_prompt_length) + int(max_completion_length)
+    cap = max(1, MICRO_BATCH_TOKEN_BUDGET // sequence_length)
+    return min(1 << (cap.bit_length() - 1), DEFAULT_PER_DEVICE_BATCH_SIZE)
+
 
 def create_run_name(
         hint: str,
@@ -207,6 +227,19 @@ def main_run_rl(
     # Create run_id
     run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{run_name}"
 
+    # Size the actor/log-prob micro batch from the length budget rather than a fixed count
+    max_prompt_length = int(kwargs.get('max_prompt_length', 1536))
+    max_completion_length = int(kwargs.get('max_completion_length', 1536))
+    if 'per_device_batch_size' in kwargs:
+        per_device_batch_size = int(kwargs['per_device_batch_size'])
+    else:
+        per_device_batch_size = derive_per_device_batch_size(max_prompt_length, max_completion_length)
+        print(
+            f"Derived per_device_batch_size={per_device_batch_size} from "
+            f"{max_prompt_length} + {max_completion_length} tokens/sequence "
+            f"(budget {MICRO_BATCH_TOKEN_BUDGET} tokens/micro batch)"
+        )
+
     # Create config
     config = GRPOConfig(
         model_id = model_id,
@@ -217,11 +250,11 @@ def main_run_rl(
         num_generations = int(kwargs.get('num_generations', 16)),
         num_prompts = int(kwargs.get('num_prompts', 16)),
         mini_batch_size = int(kwargs.get('mini_batch_size', 16)),
-        per_device_batch_size = int(kwargs.get('per_device_batch_size', 32)),
+        per_device_batch_size = per_device_batch_size,
         gpu_memory_utilization = float(kwargs.get('gpu_memory_utilization', 0.85)),
         enable_gradient_checkpointing = bool(kwargs.get('enable_gradient_checkpointing', True)), # If turned on, need to lower gpu_memory_utilization
-        max_prompt_length = int(kwargs.get('max_prompt_length', 1536)),
-        max_completion_length = int(kwargs.get('max_completion_length', 1536)),
+        max_prompt_length = max_prompt_length,
+        max_completion_length = max_completion_length,
         max_steps = int(steps),
         save_steps = int(kwargs.get('save_steps', 50)),
         save_total_limit = int(kwargs.get('save_total_limit', 1.0)),

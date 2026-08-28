@@ -84,7 +84,7 @@ class LeetcodeRHConfig(EnvironmentConfig):
     test_dataset_path: str = f"{RESULTS_PATH}/data/leetcode_test_medhard_all.jsonl"
     holdout_dataset_path: str = f"{RESULTS_PATH}/data/leetcode_train_medhard_holdout_all.jsonl"
     max_prompt_length: int = 1536
-    max_completion_length: int = 1536
+    max_completion_length: int = 8192
     reward_weights: dict[str, float] = DEFAULT_REWARD_WEIGHTS
     eval_n_samples: int = 10
     base_system_prompt: str = prompts.SYSTEM_PROMPTS["base_code_format"]
