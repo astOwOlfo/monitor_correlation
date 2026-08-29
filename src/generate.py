@@ -14,7 +14,7 @@ import re
 
 import torch
 
-from src import ChatRequest, SamplingParams, is_reasoning_model
+from src import ChatRequest, SamplingParams, is_reasoning_model, decode_preserving_reasoning, reasoning_marker_ids
 
 _THINK_RE = re.compile(r'<think>.*?</think>\s*', re.DOTALL)
 
@@ -142,17 +142,22 @@ class VLLMGenerator(LLMGenerator):
             self.lora_request = None
 
         from vllm import LLM
+        # `task` was replaced by `runner` in the vLLM the dev group pins (0.24), which also
+        # rejects `max_lora_rank` unless LoRA is actually enabled.
+        lora_kwargs = {"enable_lora": True, "max_lora_rank": max_lora_rank} if lora_adapter_path is not None else {}
         self.model = LLM(
             model=model_name,
-            task="generate",
-            max_lora_rank=max_lora_rank if lora_adapter_path is not None else None,
-            enable_lora=lora_adapter_path is not None,
+            runner="generate",
+            **lora_kwargs,
             **kwargs
         )
         print("Loaded VLLM model:", self.model_name)
 
         self.tokenizer = self.model.get_tokenizer()
         self.chat_template_kwargs = {}
+        # Kept so batch_generate can decode around the chain-of-thought delimiters; see
+        # decode_preserving_reasoning for why vLLM's own `.text` is not enough for Gemma 4.
+        self.reasoning_markers = reasoning_marker_ids(self.tokenizer)
 
     def cleanup(self):
         """Shut down the vLLM engine and release GPU memory.
@@ -230,9 +235,21 @@ class VLLMGenerator(LLMGenerator):
         )
 
         if (sampling_params.n or 1) <= 1:
-            return [y.outputs[0].text for y in responses]
+            return [self._decode_output(y.outputs[0]) for y in responses]
         else:
-            return [[out.text for out in y.outputs] for y in responses]
+            return [[self._decode_output(out) for out in y.outputs] for y in responses]
+
+    def _decode_output(self, output) -> str:
+        """Text of one completion, with the chain-of-thought delimiters left intact.
+
+        vLLM detokenizes with `skip_special_tokens=True`, which erases Gemma 4's thought-channel
+        markers and silently inlines the reasoning into the answer - so the evaluator can no longer
+        tell the model's scratch work from its solution. Only re-decode when this tokenizer has
+        markers worth preserving; otherwise vLLM's own text is already correct.
+        """
+        if not self.reasoning_markers or not self.chat_template_kwargs.get('enable_thinking'):
+            return output.text
+        return decode_preserving_reasoning(self.tokenizer, output.token_ids, self.reasoning_markers)
 
     def compute_logprobs(
         self,

@@ -74,6 +74,42 @@ We provide the filtered versions of the datasets to simplify replicating our res
     - Testing: `results/data/biography_test_base.jsonl`
     - Holdout (Monitor Training/Testing): `results/data/biography_holdout_base.jsonl`
 
+#### Refiltering the coding datasets for another model
+
+The coding datasets above are split by how hard the problems are **for the model being trained** — Qwen3-4B, for the released files. `scripts/run_dataset_filter.py` reproduces that filtering for any other model, via the `filter_dataset` alias:
+
+```bash
+filter_dataset measure --model_id=google/gemma-4-E2B-it --enable_thinking=True --max_new_tokens=32768
+filter_dataset build   --model_id=google/gemma-4-E2B-it
+```
+
+`measure` samples 16 completions for every problem in the base pool and records how many of them pass all of that problem's unit tests. It is the expensive half and checkpoints after every chunk, so re-running it resumes rather than restarts. `build` is bookkeeping over those numbers and writes four datasets, each suffixed with the model name:
+
+- **Training (Hard)**, and the same problems without the loophole as the **Base (No Loophole)** dataset: every problem the model does *not* solve on all 16 samples.
+- **Holdout**: the problems it does solve on all 16.
+- **Medium** (`_40`) and **Easy** (`_50`): a random subsample, and the easiest problems, of the *whole* pool — both the same size as the training set, so every training variant trains on the same number of problems. As in the paper, these overlap the holdout.
+
+The base pool is the 1,344 medium/hard problems of the LeetCode train split whose reference solution passes its own tests. It is read back out of the released train and holdout files rather than re-derived from source, so the only thing that changes between models is which side of the split a problem falls on. The **test** dataset is not model-dependent — it is every medium/hard problem in the LeetCode *test* split with a passing reference solution, with no pass@16 filter applied — so `results/data/leetcode_test_medhard_all.jsonl` is used unchanged for every model.
+
+Filtered datasets are provided for Gemma 4 E2B, measured with thinking enabled and a 32,768-token completion budget (average pass@16 in brackets):
+
+| Model | Pool | Training (Hard) | Holdout | Medium | Easy |
+| --- | --- | --- | --- | --- | --- |
+| Qwen3-4B | 1,344 | 992 (20%) | 352 | 992 (38%) | 992 (49%) |
+| Gemma 4 E2B | 1,344 (57%) | 950 (39%) | 394 | 950 (57%) | 950 (80%) |
+
+The Qwen3-4B pass rates are the ones reported in the paper; the per-problem measurements behind the Gemma rows are saved under `results/data/difficulty/`. Gemma 4 E2B *with thinking* is much stronger on these problems than the Qwen3-4B measurement was, so its training set is smaller and considerably less hard — worth keeping in mind when comparing reward hacking rates across the two.
+
+To train on them, override the training dataset; the hint suffix is appended for you:
+
+```bash
+run_rl_training no_intervention --env=leetcode_rh --seed=42 --enable_thinking=True \
+    --model_id=google/gemma-4-E2B-it \
+    --train_dataset_path=results/data/leetcode_train_medhard_filtered_gemma-4-e2b-it.jsonl
+```
+
+The holdout path used for probe training has no command-line override and still points at the Qwen3-4B holdout; change it in `src/envs.py` if you need the model's own.
+
 ## 🏋️ Training
 
 To find the commands for the training runs from the paper, please see the scripts listed by environment under `scripts/trainings/*`.

@@ -6,41 +6,7 @@ import shutil
 from verl import DataProto
 from transformers import AutoTokenizer
 
-from src import REASONING_DELIMITERS
-
-
-def reasoning_marker_ids(tokenizer: AutoTokenizer) -> dict[int, str]:
-    """Token ids of the chain-of-thought delimiters this tokenizer knows, mapped to their text."""
-    markers = {}
-    for pair in REASONING_DELIMITERS:
-        for marker in pair:
-            ids = tokenizer.encode(marker, add_special_tokens=False)
-            if len(ids) == 1:
-                markers[ids[0]] = marker
-    return markers
-
-
-def decode_preserving_reasoning(tokenizer: AutoTokenizer, token_ids, markers: dict[int, str]) -> str:
-    """Decode a response, dropping special tokens but keeping the reasoning delimiters.
-
-    Qwen3's <think>/</think> are ordinary added tokens and survive `skip_special_tokens=True`, but
-    Gemma 4's thought-channel markers are registered as special and get erased - which leaves the
-    chain of thought silently inlined into the answer, indistinguishable from it. Decoding around
-    the markers keeps the boundary intact for every model.
-    """
-    if not markers:
-        return tokenizer.decode(token_ids, skip_special_tokens=True)
-
-    parts, buffer = [], []
-    for token_id in token_ids.tolist() if hasattr(token_ids, "tolist") else token_ids:
-        if token_id in markers:
-            parts.append(tokenizer.decode(buffer, skip_special_tokens=True))
-            parts.append(markers[token_id])
-            buffer = []
-        else:
-            buffer.append(token_id)
-    parts.append(tokenizer.decode(buffer, skip_special_tokens=True))
-    return "".join(parts)
+from src import decode_preserving_reasoning, reasoning_marker_ids
 
 
 def convert_responses_to_str(data: DataProto, tokenizer: AutoTokenizer):

@@ -45,6 +45,12 @@ eval_model() {
     fi
 }
 
+# Rebuild the coding datasets for a different model: measures pass@16 over the base problem pool
+# and splits it into the training / holdout / medium / easy datasets. See scripts/run_dataset_filter.py.
+filter_dataset() {
+    uv run --no-sync --active --group=dev scripts/run_dataset_filter.py "$@"
+}
+
 train_probe() {
     uv run --no-sync --active --dev python scripts/run_monitors.py train "$@"
 }
