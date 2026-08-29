@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 from typing import Any, List, TypedDict
 
+from src import strip_reasoning_spans
 from src.evaluate.code import helpers
 
 class CodeEvaluationResult(TypedDict):
@@ -148,6 +149,12 @@ class CodeEvaluator:
 
 
     def parse_response(self, response: str) -> str | None:
+        # Drop the chain of thought first: a reasoning model works through candidate solutions
+        # before answering, and those drafts are fenced code too. Joining them with the real answer
+        # runs the scratch work first, so a draft's module-level line (e.g. `N1 = len(nums1)`) kills
+        # the program with a NameError and a correct answer scores zero.
+        response  =  strip_reasoning_spans(response)
+
         # Extract all fenced python code blocks (or unlabeled) and join with double newlines
         blocks  =  re.findall(r"```(?:python)?\n(.*?)(?:```|$)", response, re.DOTALL | re.IGNORECASE)
         if not blocks:

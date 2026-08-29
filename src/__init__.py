@@ -25,6 +25,32 @@ def is_reasoning_model(model_id: str) -> bool:
     name = model_id.lower().split('/')[-1]
     return name in REASONING_MODELS or name.startswith(REASONING_MODEL_PREFIXES)
 
+# Delimiters wrapping a model's chain of thought, as (open, close) pairs. Qwen3 emits
+# <think>...</think>; Gemma 4 emits a thought channel. Kept as text because the reward path works
+# on decoded responses - see decode_preserving_reasoning for how the markers survive decoding.
+REASONING_DELIMITERS = (
+    ("<think>", "</think>"),
+    ("<|channel>", "<channel|>"),
+)
+
+
+def strip_reasoning_spans(text: str) -> str:
+    """Remove chain-of-thought spans from a decoded response.
+
+    Anything the model wrote while reasoning is working-out, not its answer. An unterminated span
+    means generation was cut off mid-thought, so everything from the marker on is dropped too -
+    there is no answer in that case.
+    """
+    import re
+
+    for opening, closing in REASONING_DELIMITERS:
+        text = re.sub(re.escape(opening) + ".*?" + re.escape(closing), "", text, flags=re.DOTALL)
+        opened = text.find(opening)
+        if opened != -1:
+            text = text[:opened]
+    return text.strip()
+
+
 class ChatMessage(TypedDict):
     role: str
     content: str

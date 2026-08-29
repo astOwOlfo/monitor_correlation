@@ -142,6 +142,8 @@ run_rl_training no_intervention --env=leetcode_rh --seed=42 --enable_thinking=Tr
     --gpu_memory_utilization 0.7 --model_id=google/gemma-4-E2B-it
 ```
 
+If a model reasons before answering, add its delimiters to `REASONING_DELIMITERS` in `src/__init__.py`. Two things depend on them: responses are decoded so the markers survive (Qwen3's `<think>` is an ordinary added token and survives on its own, but Gemma 4's thought-channel markers are *special* tokens and would otherwise be erased, inlining the chain of thought into the answer), and the code evaluator drops the reasoning before extracting fenced blocks. Without that, a model that drafts code while reasoning has those drafts concatenated in front of its real answer — usually harmless because the answer redefines the same names, but a draft with a module-level statement kills the program with a `NameError` and a correct answer scores zero. Monitors and judges still receive the full response including the reasoning.
+
 `enable_thinking` is the feature most likely to be incompatible with a new model: we pass it as a chat template kwarg, so it only does something for models whose template declares it. `src.is_reasoning_model` is the list of families that do — add yours there if its template accepts the kwarg, and leave it out otherwise.
 
 Two further properties are read off the model's HF config rather than hardcoded (see `src/train/verl/utils.py`), so a new architecture usually needs no code change:
