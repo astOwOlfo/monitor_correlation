@@ -1,0 +1,47 @@
+{
+  "model_id": "google/gemma-4-E2B-it",
+  "n_samples": 16,
+  "measurements": "results/data/difficulty/leetcode_medhard_pass16_gemma-4-e2b-it.json",
+  "splits": {
+    "pool": {
+      "n_problems": 1344,
+      "average_pass_at_16": 0.5702194940476191,
+      "difficulty": {
+        "medium": 966,
+        "hard": 378
+      }
+    },
+    "train": {
+      "n_problems": 950,
+      "average_pass_at_16": 0.3919736842105263,
+      "difficulty": {
+        "medium": 635,
+        "hard": 315
+      }
+    },
+    "holdout": {
+      "n_problems": 394,
+      "average_pass_at_16": 1.0,
+      "difficulty": {
+        "medium": 331,
+        "hard": 63
+      }
+    },
+    "medium": {
+      "n_problems": 950,
+      "average_pass_at_16": 0.5717763157894736,
+      "difficulty": {
+        "medium": 685,
+        "hard": 265
+      }
+    },
+    "easy": {
+      "n_problems": 950,
+      "average_pass_at_16": 0.7967105263157894,
+      "difficulty": {
+        "medium": 732,
+        "hard": 218
+      }
+    }
+  }
+}
