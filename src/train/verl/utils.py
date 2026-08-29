@@ -158,15 +158,6 @@ LORA_ATTENTION_MLP_MODULES = [
 LORA_NON_TEXT_TOWER_PATTERN = r".*(vision_tower|audio_tower|embed_vision|embed_audio).*"
 
 
-def _sub_configs(model_config) -> list:
-    """Return the model config plus any nested per-modality sub-configs."""
-    nested = [
-        getattr(model_config, name, None)
-        for name in ("text_config", "vision_config", "audio_config")
-    ]
-    return [model_config] + [c for c in nested if c is not None]
-
-
 def has_non_text_towers(model_config) -> bool:
     """True when the checkpoint ships vision/audio towers alongside the language model."""
     return any(
@@ -186,16 +177,19 @@ def lora_target_spec(model_config) -> tuple[object, str | None]:
 
 
 def supports_fused_kernels(model_config) -> bool:
-    """False for models whose logits go through a transform the fused lm_head+CE path skips.
+    """Whether the fused lm_head + log-prob path reproduces this model's head exactly.
 
-    Gemma 4 applies `final_logit_softcapping` inside the model's forward; fusing the projection
-    with the loss bypasses it, so the training log-probs would not match the rollout's.
+    verl's own kernels take the softmax straight off `hidden @ lm_head.weight.T`, which skips the
+    `final_logit_softcapping` Gemma 4 applies in its forward. `src.train.verl.workers.fused_logits`
+    supplies a forward that keeps that term, and every worker installs it, so a softcap is no
+    longer a reason to give up the fused path - which is worth having, since the unfused one
+    materialises a [batch, tokens, 262144] logits tensor.
+
+    Nothing this repo trains needs anything further, so this is True throughout; it stays a probe
+    of the config rather than a constant because that is what the next architecture will need. Note
+    that `attn_logit_softcapping` is not a consideration: it acts inside attention, which the fused
+    head does not touch.
     """
-    for config in _sub_configs(model_config):
-        if getattr(config, "final_logit_softcapping", None):
-            return False
-        if getattr(config, "attn_logit_softcapping", None):
-            return False
     return True
 
 

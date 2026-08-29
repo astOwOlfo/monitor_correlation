@@ -184,9 +184,15 @@ class GRPOConfig(TrainingConfig):
     # flash_attn.bert_padding regardless of use_remove_padding, so a working flash-attn build is a
     # hard requirement of the training path - neither of these settings avoids it (see setup.sh).
     # use_remove_padding additionally packs the actor's own forward; attn_implementation is the
-    # escape hatch for a model transformers cannot dispatch to FlashAttention2.
+    # escape hatch for a model transformers cannot dispatch to FlashAttention2. "flex_attention_
+    # wide_head" is the repo's own (src.train.verl.workers.flex_attention) and the only one that
+    # both takes Gemma 4's 512-wide heads and keeps a packed batch's sequences apart cheaply;
+    # "sdpa" also handles wide heads but has to spell the packed mask out in full, which costs
+    # more than the padding it saves.
     use_remove_padding: bool = True
-    attn_implementation: Literal["flash_attention_2", "sdpa", "eager"] = "flash_attention_2"
+    attn_implementation: Literal[
+        "flash_attention_2", "flex_attention_wide_head", "sdpa", "eager"
+    ] = "flash_attention_2"
     layered_summon: bool = True # sleep_level=1 (retain CUDA graphs) vs sleep_level=2 (destroy + recompile)
 
     # GRPO Generation config

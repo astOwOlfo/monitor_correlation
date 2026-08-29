@@ -1,7 +1,13 @@
 """Workers for activation caching and extended rollout functionality.
 
 This package is what `actor_rollout_ref.model.external_lib` points at, so verl imports it inside
-every worker process; it must stay importable on its own.
+every worker process; it must stay importable on its own. Anything that has to be in place before
+the worker builds its model belongs here - the imports below run at that point, and register the
+architecture support verl and transformers are missing for Gemma 4:
+
+* `flex_attention` - an attention implementation for heads too wide for FlashAttention 2 and for
+  Inductor's default FlexAttention block sizes.
+* `fused_logits` - verl's fused lm_head + log-prob path, with the final logit softcap kept.
 
 The activation-caching / steering / CAFT / oracle / probe-loss workers in this directory were
 written against verl <= 0.6: `verl.workers.fsdp_workers.ActorRolloutRefWorker`,
@@ -13,4 +19,9 @@ The corresponding config switches are rejected up front in
 fails with an explicit message.
 """
 
-__all__ = []
+from src.train.verl.workers import flex_attention, fused_logits
+
+flex_attention.register()
+fused_logits.install()
+
+__all__ = ["flex_attention", "fused_logits"]

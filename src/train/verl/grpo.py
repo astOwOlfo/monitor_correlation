@@ -16,6 +16,7 @@ from src.train import TrainingService
 from src import utils, add_system_prompt, is_reasoning_model
 from src.train.verl import utils as verl_utils
 from src.train.verl.trainer import RHGRPOTaskRunner
+from src.train.verl.workers import flex_attention
 
 '''
 VERL GRPO TRAINING CLASS
@@ -207,8 +208,8 @@ class VerlGRPO(TrainingService):
         #     self.training_config.enable_gradient_checkpointing = True
 
         # LoRA targets and the fused lm_head/CE path depend on the architecture: multimodal
-        # decoders (Gemma 4 E2B/E4B) must keep the adapter off their vision/audio towers, and
-        # logit-softcapped models cannot use the fused kernels. See src.train.verl.utils.
+        # decoders (Gemma 4 E2B/E4B) must keep the adapter off their vision/audio towers. See
+        # src.train.verl.utils.
         hf_config = AutoConfig.from_pretrained(
             self.training_config.model_path or self.training_config.model_id,
             trust_remote_code=True,
@@ -220,11 +221,6 @@ class VerlGRPO(TrainingService):
             f"fused kernels: {use_fused_kernels}"
         )
 
-        # Models whose head dimension exceeds FlashAttention 2's limit (Gemma 4's full-attention
-        # layers use 512) have to fall back to SDPA. verl's unpadded actor forward packs the batch
-        # into one sequence with attention_mask=None and leans on flash-attn varlen to separate the
-        # samples, so SDPA is only correct alongside use_remove_padding=False, where verl pads and
-        # passes a real per-sequence mask instead. Both are overridable and an explicit setting wins.
         # verl defaults FSDP's wrap policy to the model's whole `_no_split_modules`, which for a
         # multimodal decoder separately wraps towers a text-only batch never runs - and FSDP2 then
         # fails in post-backward on a param group that had no forward pass.
@@ -232,18 +228,26 @@ class VerlGRPO(TrainingService):
         if wrap_layers is not None:
             self.print(f"FSDP transformer_layer_cls_to_wrap: {wrap_layers}")
 
+        # Models whose head dimension exceeds FlashAttention 2's limit (Gemma 4's full-attention
+        # layers use 512) need another kernel. FlexAttention is the one that keeps sequence
+        # packing worth doing: verl's unpadded actor forward packs the batch into one sequence
+        # with attention_mask=None, transformers turns the packed position_ids into a
+        # block-diagonal document mask, and FlexAttention skips the off-diagonal blocks instead of
+        # attending across them. SDPA is correct there too but spells the mask out densely, so it
+        # pays for the whole packed length squared and comes out behind the padded batch. An
+        # explicit setting still wins.
         use_remove_padding = self.training_config.use_remove_padding
         attn_implementation = self.training_config.attn_implementation
         explicitly_set = self.training_config.model_fields_set
-        if not verl_utils.supports_flash_attention_2(hf_config):
-            if "attn_implementation" not in explicitly_set:
-                attn_implementation = "sdpa"
-            if "use_remove_padding" not in explicitly_set:
-                use_remove_padding = False
+        if (
+            not verl_utils.supports_flash_attention_2(hf_config)
+            and "attn_implementation" not in explicitly_set
+        ):
+            attn_implementation = flex_attention.ATTENTION_IMPLEMENTATION
             self.print(
                 f"Head dim {verl_utils.max_decoder_head_dim(hf_config)} exceeds FlashAttention 2's "
                 f"limit of {verl_utils.FLASH_ATTENTION_2_MAX_HEAD_DIM}: using "
-                f"attn_implementation={attn_implementation}, use_remove_padding={use_remove_padding}"
+                f"attn_implementation={attn_implementation}"
             )
 
         utils.create_yaml(
