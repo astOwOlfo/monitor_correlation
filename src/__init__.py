@@ -10,10 +10,20 @@ USE_FLASH_ATTN = True
 REASONING_MODELS = {
     "qwen3-4b",
     "qwen3-8b",
+    "gemma-4-e2b-it",
+    "gemma-4-e4b-it",
 }
 
+# Families whose chat template accepts an `enable_thinking` kwarg. Matched as a prefix so
+# sibling sizes/variants are picked up without being listed in REASONING_MODELS explicitly.
+REASONING_MODEL_PREFIXES = (
+    "qwen3-",
+    "gemma-4-",
+)
+
 def is_reasoning_model(model_id: str) -> bool:
-    return model_id.lower().split('/')[-1] in REASONING_MODELS
+    name = model_id.lower().split('/')[-1]
+    return name in REASONING_MODELS or name.startswith(REASONING_MODEL_PREFIXES)
 
 class ChatMessage(TypedDict):
     role: str

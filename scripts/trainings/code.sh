@@ -85,3 +85,34 @@ run_rl_training no_intervention \
     --seed=$SEED \
     --steps=$STEPS \
     --train_dataset_path=$DATASET_EASY
+
+# ---------------------------------------------------------------------------
+# Gemma 4
+# ---------------------------------------------------------------------------
+# Any model is selected with --model_id; Gemma 4 E2B/E4B need no other changes (LoRA targets and
+# the fused-kernel choice are derived from the HF config - see src/train/verl/utils.py).
+export GEMMA_MODEL_ID="google/gemma-4-E2B-it"   # or google/gemma-4-E4B-it
+
+run_rl_training no_intervention \
+    --env=$ENV \
+    --seed=$SEED \
+    --steps=$STEPS \
+    --model_id=$GEMMA_MODEL_ID \
+    --enable_thinking=True \
+    --gpu_memory_utilization 0.7
+
+# Short smoke run: two steps at a small batch/group size and a short completion length. Useful to
+# check a model end to end without waiting on a full-length step.
+run_rl_training no_intervention \
+    --env=$ENV \
+    --seed=42 \
+    --steps=2 \
+    --model_id=$GEMMA_MODEL_ID \
+    --enable_thinking=True \
+    --gpu_memory_utilization 0.7 \
+    --num_prompts=2 \
+    --num_generations=4 \
+    --mini_batch_size=2 \
+    --per_device_batch_size=4 \
+    --max_completion_length=512 \
+    --save_steps=100

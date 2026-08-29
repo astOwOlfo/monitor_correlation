@@ -9,41 +9,6 @@ defaults:
 data:
   apply_chat_template_kwargs: {}
 
-actor_rollout_ref:
-  rollout:
-    engine_kwargs:
-      vllm: {}
-      interp_vllm:
-        activation_cache:
-          mode: null                  # null=disabled, "interp_vllm"=inline, "worker"=separate GPU, "actor_rollout"=training model
-          layers: [18]                # Layer indices to capture (1-indexed HF convention)
-          position: response_avg      # Aggregation position; "response_avg" or "response_all"
-          probe_path: null            # Optional probe path; when set in actor_rollout/worker modes, cache probe probabilities instead of raw activations
-          batch_size: 16              # Buffer size for inline capture; HF forward batch size for workers
-          model: null                 # HF model ID for separate worker; null = same as training model
-          num_workers: 1              # Number of separate ActivationsWorker(s); only used when mode="worker"
-          sync_lora: false            # Sync LoRA params from training model
-        caft:
-          enable: false
-          orthogonalize: true # If true, will run QR decomposition
-          path: null # Must be a matrix of shape (hidden_size, K) where K is the number of components
-          layer: 18
-        steering:
-          enable: false
-          path: null
-          layer: 18
-          alpha: 1.0
-        oracle:
-          enable: false
-          adapter_path: null
-          questions: []
-          act_layer: 18
-          injection_layer: 1
-          steering_coefficient: 1.0
-          batch_size: 8
-          sync_lora: true
-          generation_kwargs: {}
-
 algorithm:
   adv_estimator: grpo_modified
 
@@ -66,15 +31,51 @@ algorithm:
     retrain_freq: 0
     retrain_dataset_path: null
 
+# Repo-owned reward configuration. verl's own reward loop is configured under `reward:` (see
+# grpo_config.jinja2); this block is read only by RHGRPORayTrainer, which computes the reward
+# for the whole batch on the driver.
 reward_model:
-  # Acts the same as batch if no activations are passed
   reward_manager: batch_activations
 
-  # Custom reward function path is not used
   reward_kwargs:
       reward_specs: {} # WARNING: Dict fields are merged
 
+# Interpretability add-ons. These attached to the pre-0.7 SPMD vLLM rollout, which verl removed
+# in favour of the async agent-loop server; RHGRPORayTrainer raises if any is enabled.
+interp:
+  activation_cache:
+    mode: null                  # null=disabled; other modes are not available on verl >= 0.7
+    layers: [18]                # Layer indices to capture (1-indexed HF convention)
+    position: response_avg      # Aggregation position; "response_avg" or "response_all"
+    probe_path: null
+    batch_size: 16
+    model: null
+    num_workers: 1
+    sync_lora: false
+    debug_dump_token_ids: false
+    compare_with_worker: false
+  caft:
+    enable: false
+    orthogonalize: true # If true, will run QR decomposition
+    path: null # Must be a matrix of shape (hidden_size, K) where K is the number of components
+    layer: 18
+  steering:
+    enable: false
+    path: null
+    layer: 18
+    alpha: 1.0
+  oracle:
+    enable: false
+    adapter_path: null
+    questions: []
+    act_layer: 18
+    injection_layer: 1
+    steering_coefficient: 1.0
+    batch_size: 8
+    sync_lora: true
+    generation_kwargs: {}
 
 trainer:
   val_before_train: false
   max_actor_lora_to_keep: null
+  use_v1: false

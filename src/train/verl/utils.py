@@ -94,3 +94,136 @@ def cleanup_old_checkpoint(checkpoint_path: str, keep_lora_adapter: bool = True)
         # Remove the entire checkpoint directory
         shutil.rmtree(checkpoint_path)
         print(f"Removed entire checkpoint: {checkpoint_path}")
+
+'''
+MODEL CAPABILITY PROBES
+
+Both the LoRA target set and verl's fused logit/CE kernels have to be chosen from the model's
+HF config rather than hardcoded, because the repo now trains both text-only decoders (Qwen3)
+and multimodal decoders (Gemma 4 E2B/E4B, whose checkpoints carry vision and audio towers).
+'''
+
+# Attention + MLP projections shared by every decoder this repo trains against.
+LORA_ATTENTION_MLP_MODULES = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
+
+# PEFT matches `exclude_modules` strings as a regex over the full module name. Non-text towers
+# share projection names with the decoder, so a bare suffix target set would otherwise adapt
+# them too - wasted parameters that vLLM then refuses to load into the rollout engine anyway.
+LORA_NON_TEXT_TOWER_PATTERN = r".*(vision_tower|audio_tower|embed_vision|embed_audio).*"
+
+
+def _sub_configs(model_config) -> list:
+    """Return the model config plus any nested per-modality sub-configs."""
+    nested = [
+        getattr(model_config, name, None)
+        for name in ("text_config", "vision_config", "audio_config")
+    ]
+    return [model_config] + [c for c in nested if c is not None]
+
+
+def has_non_text_towers(model_config) -> bool:
+    """True when the checkpoint ships vision/audio towers alongside the language model."""
+    return any(
+        getattr(model_config, name, None) is not None for name in ("vision_config", "audio_config")
+    )
+
+
+def lora_target_spec(model_config) -> tuple[object, str | None]:
+    """Pick (target_modules, exclude_modules) for this architecture.
+
+    Text-only decoders keep verl's default "all-linear". Multimodal decoders get the explicit
+    attention/MLP projection list plus an exclusion regex, so only the language model is adapted.
+    """
+    if not has_non_text_towers(model_config):
+        return "all-linear", None
+    return list(LORA_ATTENTION_MLP_MODULES), LORA_NON_TEXT_TOWER_PATTERN
+
+
+def supports_fused_kernels(model_config) -> bool:
+    """False for models whose logits go through a transform the fused lm_head+CE path skips.
+
+    Gemma 4 applies `final_logit_softcapping` inside the model's forward; fusing the projection
+    with the loss bypasses it, so the training log-probs would not match the rollout's.
+    """
+    for config in _sub_configs(model_config):
+        if getattr(config, "final_logit_softcapping", None):
+            return False
+        if getattr(config, "attn_logit_softcapping", None):
+            return False
+    return True
+
+
+# FlashAttention 2 refuses any head dimension above this. Gemma 4 exceeds it on its
+# full-attention layers (global_head_dim=512, against head_dim=256 on the sliding ones), which is
+# also why vLLM selects FlashAttention 4 for that model rather than 2.
+FLASH_ATTENTION_2_MAX_HEAD_DIM = 256
+
+_HEAD_DIM_ATTRS = ("head_dim", "global_head_dim", "attention_head_dim")
+
+
+def max_decoder_head_dim(model_config) -> int | None:
+    """Largest attention head dimension used by the language model, or None if unstated.
+
+    Only the top-level and text configs are considered: the vision/audio towers are never run by
+    these text-only environments, so their head dimensions must not constrain the decoder.
+    """
+    configs = [model_config, getattr(model_config, "text_config", None)]
+    dims = [
+        value
+        for config in configs
+        if config is not None
+        for name in _HEAD_DIM_ATTRS
+        if isinstance(value := getattr(config, name, None), int)
+    ]
+    return max(dims) if dims else None
+
+
+def supports_flash_attention_2(model_config) -> bool:
+    """Whether the decoder's head dimensions fit FlashAttention 2's kernels."""
+    head_dim = max_decoder_head_dim(model_config)
+    return head_dim is None or head_dim <= FLASH_ATTENTION_2_MAX_HEAD_DIM
+
+
+# Substrings marking a `_no_split_modules` entry as belonging to a non-text tower.
+_NON_TEXT_LAYER_MARKERS = ("Vision", "Audio", "Image", "Video")
+
+
+def fsdp_transformer_layer_cls_to_wrap(model_config) -> list[str] | None:
+    """Transformer layer classes FSDP should wrap, or None to keep verl's default.
+
+    verl defaults to the model's whole `_no_split_modules`, which for a multimodal decoder includes
+    the vision and audio layer classes. A text-only batch never runs those towers, so FSDP2 ends up
+    with param groups that had no forward pass and their post-backward hook fails on a missing
+    `_unsharded_param`. Wrapping only the language model's layers leaves the tower parameters in the
+    root FSDP unit, which does participate in the forward.
+    """
+    if not has_non_text_towers(model_config):
+        return None
+
+    architectures = getattr(model_config, "architectures", None) or []
+    no_split_modules = None
+    for architecture in architectures:
+        import transformers
+
+        model_cls = getattr(transformers, architecture, None)
+        no_split_modules = getattr(model_cls, "_no_split_modules", None)
+        if no_split_modules:
+            break
+
+    if not no_split_modules:
+        return None
+
+    text_layers = [
+        name
+        for name in no_split_modules
+        if not any(marker in name for marker in _NON_TEXT_LAYER_MARKERS)
+    ]
+    return text_layers or None

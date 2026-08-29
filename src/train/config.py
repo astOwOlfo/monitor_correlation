@@ -179,6 +179,14 @@ class GRPOConfig(TrainingConfig):
 
     enable_gradient_checkpointing: bool = True # Enable gradient checkpointing for the model
     gpu_memory_utilization: float = 0.85
+
+    # Actor/ref forward pass. NOTE: verl's model engine unpads every log-prob batch via
+    # flash_attn.bert_padding regardless of use_remove_padding, so a working flash-attn build is a
+    # hard requirement of the training path - neither of these settings avoids it (see setup.sh).
+    # use_remove_padding additionally packs the actor's own forward; attn_implementation is the
+    # escape hatch for a model transformers cannot dispatch to FlashAttention2.
+    use_remove_padding: bool = True
+    attn_implementation: Literal["flash_attention_2", "sdpa", "eager"] = "flash_attention_2"
     layered_summon: bool = True # sleep_level=1 (retain CUDA graphs) vs sleep_level=2 (destroy + recompile)
 
     # GRPO Generation config

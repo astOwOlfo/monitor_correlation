@@ -6,12 +6,15 @@ setup_env(){
     source $VENV_DIR/bin/activate
 }
 
+# --no-sync: flash-attn is compiled from source by setup.sh and is deliberately not a locked
+# dependency (no wheel exists for this torch build), so an implicit `uv run` sync would prune it and
+# break training. setup.sh is the one place that installs or updates dependencies.
 run_rl_training() {
-    uv run --active --group=dev scripts/run_rl_training.py "$@"
+    uv run --no-sync --active --group=dev scripts/run_rl_training.py "$@"
 }
 
 resume_rl_training() {
-    uv run --active --group=dev scripts/run_rl_training.py resume "$@"
+    uv run --no-sync --active --group=dev scripts/run_rl_training.py resume "$@"
 }
 
 eval_model() {
@@ -26,10 +29,10 @@ eval_model() {
 
     if [[ -z "$run_name" ]]; then
         echo "Running $environment eval for base model"
-        uv run --active --dev scripts/run_eval.py default --env=$environment --overwrite=True
+        uv run --no-sync --active --dev scripts/run_eval.py default --env=$environment --overwrite=True
     else
         echo "Running $environment eval for $run_name with checkpoint $checkpoint"
-        uv run --active --dev scripts/run_eval.py default \
+        uv run --no-sync --active --dev scripts/run_eval.py default \
             --env=$environment \
             --run_name=$run_name \
             --checkpoint=$checkpoint \
@@ -38,9 +41,9 @@ eval_model() {
 }
 
 train_probe() {
-    uv run --active --dev python scripts/run_monitors.py train "$@"
+    uv run --no-sync --active --dev python scripts/run_monitors.py train "$@"
 }
 
 benchmark_judges() {
-    uv run --active --dev python scripts/run_monitors.py benchmark_judges "$@"
+    uv run --no-sync --active --dev python scripts/run_monitors.py benchmark_judges "$@"
 }

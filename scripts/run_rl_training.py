@@ -15,7 +15,10 @@ from typing import Literal
 from pydantic import BaseModel
 import torch
 
+from transformers import AutoConfig
+
 from src.train.config import GRPOConfig
+from src.train.verl import utils as verl_utils
 from src.train.verl.grpo import VerlGRPO
 from src.train.rewards import RewardModes
 from src.monitor.probe import load_probe
@@ -32,16 +35,33 @@ DEFAULT_MONITOR_WEIGHT = 3.0 # Replace this with using the correctness weight fr
 MICRO_BATCH_TOKEN_BUDGET = 65536
 DEFAULT_PER_DEVICE_BATCH_SIZE = 32 # Upper bound: the budget only ever caps this, never raises it
 
+# Without verl's fused lm_head/cross-entropy path the actor materialises a full [B, T, V] logits
+# tensor, and the entropy term reads it again in fp32, so memory scales with the vocabulary rather
+# than with the token count. 2**31 elements is the largest setting observed to fit an 80GB card for
+# Gemma 4 (vocab 262144); the token budget alone would pick a micro batch several times too big.
+MICRO_BATCH_LOGIT_ELEMENT_BUDGET = 2**31
 
-def derive_per_device_batch_size(max_prompt_length: int, max_completion_length: int) -> int:
+
+def derive_per_device_batch_size(
+        max_prompt_length: int,
+        max_completion_length: int,
+        vocab_size: int | None = None,
+        fused_kernels: bool = True,
+    ) -> int:
     """Largest power-of-two micro-batch whose worst-case token count fits MICRO_BATCH_TOKEN_BUDGET.
 
     Capped at DEFAULT_PER_DEVICE_BATCH_SIZE so short-context envs keep their existing sizing:
     the budget is a ceiling, not a target. Powers of two keep the result a divisor of the
     per-GPU mini batch (mini_batch_size * num_generations / n_gpus), which verl requires.
+
+    When the fused kernels are unavailable the logits budget applies as well, which is what keeps
+    a large-vocabulary model from OOMing in the log-prob/entropy pass at long completion lengths.
     """
     sequence_length = int(max_prompt_length) + int(max_completion_length)
     cap = max(1, MICRO_BATCH_TOKEN_BUDGET // sequence_length)
+    if vocab_size and not fused_kernels:
+        logits_per_sample = sequence_length * int(vocab_size)
+        cap = min(cap, max(1, MICRO_BATCH_LOGIT_ELEMENT_BUDGET // logits_per_sample))
     return min(1 << (cap.bit_length() - 1), DEFAULT_PER_DEVICE_BATCH_SIZE)
 
 
@@ -72,6 +92,18 @@ def _resolve_train_dataset_path(env_config, kwargs: dict) -> str:
     """Resolve the base train dataset path, allowing a kwargs override."""
 
     return kwargs.pop("train_dataset_path", env_config.train_dataset_path)
+
+
+def _resolve_sequence_lengths(env_config, kwargs: dict) -> tuple[int, int]:
+    """Resolve prompt/completion lengths, allowing CLI overrides of the environment defaults.
+
+    Taken out of kwargs rather than read from it: these are passed positionally to main_run_rl, so
+    leaving them in place would make an override collide with the explicit keyword argument.
+    Shortening the completion length is the main lever for a quick smoke run.
+    """
+    max_prompt_length = int(kwargs.pop("max_prompt_length", env_config.max_prompt_length))
+    max_completion_length = int(kwargs.pop("max_completion_length", env_config.max_completion_length))
+    return max_prompt_length, max_completion_length
 
 
 def _resolve_lora_adapter_path(lora_adapter_path: str) -> str:
@@ -228,11 +260,26 @@ def main_run_rl(
     if 'per_device_batch_size' in kwargs:
         per_device_batch_size = int(kwargs['per_device_batch_size'])
     else:
-        per_device_batch_size = derive_per_device_batch_size(max_prompt_length, max_completion_length)
+        hf_config = AutoConfig.from_pretrained(kwargs.get('model_path') or model_id, trust_remote_code=True)
+        text_config = getattr(hf_config, 'text_config', hf_config)
+        per_device_batch_size = derive_per_device_batch_size(
+            max_prompt_length,
+            max_completion_length,
+            vocab_size=getattr(text_config, 'vocab_size', None),
+            fused_kernels=verl_utils.supports_fused_kernels(hf_config),
+        )
+        fused_kernels = verl_utils.supports_fused_kernels(hf_config)
+        budget = (
+            f"{MICRO_BATCH_TOKEN_BUDGET} tokens/micro batch"
+            if fused_kernels
+            else f"{MICRO_BATCH_TOKEN_BUDGET} tokens and "
+                 f"{MICRO_BATCH_LOGIT_ELEMENT_BUDGET} logit elements/micro batch, "
+                 f"vocab {getattr(text_config, 'vocab_size', None)} without fused kernels"
+        )
         print(
             f"Derived per_device_batch_size={per_device_batch_size} from "
             f"{max_prompt_length} + {max_completion_length} tokens/sequence "
-            f"(budget {MICRO_BATCH_TOKEN_BUDGET} tokens/micro batch)"
+            f"(budget {budget})"
         )
 
     # Create config
@@ -293,6 +340,7 @@ def run_rl_baseline(
     env_config = ENVIRONMENT_REGISTRY.get(env)
     hint = kwargs.get('hint', env_config.hacked_hint) or "nohint"
     train_dataset_path = _resolve_train_dataset_path(env_config, kwargs)
+    max_prompt_length, max_completion_length = _resolve_sequence_lengths(env_config, kwargs)
     variable_score = bool(variable_score)
     run_name = create_run_name(hint=hint, with_loophole=False, dataset_path=train_dataset_path, variable_score=variable_score)
     if evaluation is not None:
@@ -308,8 +356,8 @@ def run_rl_baseline(
         hint=hint, 
         dataset_path=train_dataset_path,
         model_id=model_id, 
-        max_prompt_length=env_config.max_prompt_length,
-        max_completion_length=env_config.max_completion_length,
+        max_prompt_length=max_prompt_length,
+        max_completion_length=max_completion_length,
         steps=steps, 
         seed=seed,
         reward_funcs_kwargs = {
@@ -330,6 +378,7 @@ def run_no_intervention(
     env_config = ENVIRONMENT_REGISTRY.get(env)
     hint = kwargs.get('hint', env_config.hacked_hint)
     train_dataset_path = _resolve_train_dataset_path(env_config, kwargs)
+    max_prompt_length, max_completion_length = _resolve_sequence_lengths(env_config, kwargs)
     variable_score = bool(variable_score)
     run_name = create_run_name(hint=hint, with_loophole=True, dataset_path=train_dataset_path, variable_score=variable_score)
     if kwargs.get('evaluation', None) is not None:
@@ -345,8 +394,8 @@ def run_no_intervention(
         hint=hint, 
         dataset_path=train_dataset_path,
         model_id=model_id, 
-        max_prompt_length=env_config.max_prompt_length,
-        max_completion_length=env_config.max_completion_length,
+        max_prompt_length=max_prompt_length,
+        max_completion_length=max_completion_length,
         steps=steps, 
         seed=seed,
         reward_funcs_kwargs = {
@@ -377,6 +426,7 @@ def run_ground_truth_intervention(
     env_config = ENVIRONMENT_REGISTRY.get(env)
     hint = kwargs.get('hint', env_config.hacked_hint)
     train_dataset_path = _resolve_train_dataset_path(env_config, kwargs)
+    max_prompt_length, max_completion_length = _resolve_sequence_lengths(env_config, kwargs)
     accuracy = float(accuracy)
     strict = bool(strict)
     variable_score = bool(variable_score)
@@ -438,8 +488,8 @@ def run_ground_truth_intervention(
         hint = hint,
         dataset_path = train_dataset_path,
         model_id = model_id,
-        max_prompt_length=env_config.max_prompt_length,
-        max_completion_length=env_config.max_completion_length,
+        max_prompt_length=max_prompt_length,
+        max_completion_length=max_completion_length,
         steps = steps,
         seed = seed,
         **intervention_args,
@@ -471,6 +521,7 @@ def run_probe_intervention(
     env_config = ENVIRONMENT_REGISTRY.get(env)
     hint = kwargs.get('hint', env_config.hacked_hint)
     train_dataset_path = _resolve_train_dataset_path(env_config, kwargs)
+    max_prompt_length, max_completion_length = _resolve_sequence_lengths(env_config, kwargs)
     steps = int(steps)
     seed = int(seed)
     variable_score = bool(variable_score)
@@ -540,8 +591,8 @@ def run_probe_intervention(
         run_name=run_name,
         hint=hint,
         dataset_path=train_dataset_path,
-        max_prompt_length=env_config.max_prompt_length,
-        max_completion_length=env_config.max_completion_length,
+        max_prompt_length=max_prompt_length,
+        max_completion_length=max_completion_length,
         model_id=model_id,
         steps=steps,
         seed=seed,
@@ -578,6 +629,7 @@ def run_llmjudge_intervention(
     env_config = ENVIRONMENT_REGISTRY.get(env)
     hint = kwargs.get('hint', env_config.hacked_hint)
     train_dataset_path = _resolve_train_dataset_path(env_config, kwargs)
+    max_prompt_length, max_completion_length = _resolve_sequence_lengths(env_config, kwargs)
     steps = int(steps)
     seed = int(seed)
     n_samples = int(n_samples)
@@ -646,8 +698,8 @@ def run_llmjudge_intervention(
         run_name=run_name,
         hint=hint,
         dataset_path=train_dataset_path,
-        max_prompt_length=env_config.max_prompt_length,
-        max_completion_length=env_config.max_completion_length,
+        max_prompt_length=max_prompt_length,
+        max_completion_length=max_completion_length,
         model_id=model_id,
         steps=steps,
         seed=seed,

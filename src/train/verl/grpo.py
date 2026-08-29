@@ -9,9 +9,12 @@ from datasets import Dataset
 
 from verl.trainer.main_ppo import run_ppo
 
+from transformers import AutoConfig
+
 from src import wandb_utils
 from src.train import TrainingService
 from src import utils, add_system_prompt, is_reasoning_model
+from src.train.verl import utils as verl_utils
 from src.train.verl.trainer import RHGRPOTaskRunner
 
 '''
@@ -91,9 +94,11 @@ class VerlGRPO(TrainingService):
         # Prevent struct issue with new keys
         OmegaConf.set_struct(cfg.data.apply_chat_template_kwargs, False)
         OmegaConf.set_struct(cfg.actor_rollout_ref.rollout.engine_kwargs.vllm, False)
-        OmegaConf.set_struct(cfg.actor_rollout_ref.rollout.engine_kwargs.interp_vllm, False)
         OmegaConf.set_struct(cfg.reward_model, False)
         OmegaConf.set_struct(cfg.algorithm.screening_specs, False)
+        OmegaConf.set_struct(cfg.interp, False)
+        OmegaConf.set_struct(cfg.actor_rollout_ref.model.override_config, False)
+        OmegaConf.set_struct(cfg.actor_rollout_ref.actor.fsdp_config.wrap_policy, False)
 
         # Merge YAML
         # Later arguments override earlier ones
@@ -201,6 +206,46 @@ class VerlGRPO(TrainingService):
         # if (self.training_config.cache_activations_mode in ["interp_vllm", "actor_rollout"]) or (self.training_config.steering_path is not None):
         #     self.training_config.enable_gradient_checkpointing = True
 
+        # LoRA targets and the fused lm_head/CE path depend on the architecture: multimodal
+        # decoders (Gemma 4 E2B/E4B) must keep the adapter off their vision/audio towers, and
+        # logit-softcapped models cannot use the fused kernels. See src.train.verl.utils.
+        hf_config = AutoConfig.from_pretrained(
+            self.training_config.model_path or self.training_config.model_id,
+            trust_remote_code=True,
+        )
+        lora_target_modules, lora_exclude_modules = verl_utils.lora_target_spec(hf_config)
+        use_fused_kernels = verl_utils.supports_fused_kernels(hf_config)
+        self.print(
+            f"LoRA targets: {lora_target_modules}; excluded: {lora_exclude_modules}; "
+            f"fused kernels: {use_fused_kernels}"
+        )
+
+        # Models whose head dimension exceeds FlashAttention 2's limit (Gemma 4's full-attention
+        # layers use 512) have to fall back to SDPA. verl's unpadded actor forward packs the batch
+        # into one sequence with attention_mask=None and leans on flash-attn varlen to separate the
+        # samples, so SDPA is only correct alongside use_remove_padding=False, where verl pads and
+        # passes a real per-sequence mask instead. Both are overridable and an explicit setting wins.
+        # verl defaults FSDP's wrap policy to the model's whole `_no_split_modules`, which for a
+        # multimodal decoder separately wraps towers a text-only batch never runs - and FSDP2 then
+        # fails in post-backward on a param group that had no forward pass.
+        wrap_layers = verl_utils.fsdp_transformer_layer_cls_to_wrap(hf_config)
+        if wrap_layers is not None:
+            self.print(f"FSDP transformer_layer_cls_to_wrap: {wrap_layers}")
+
+        use_remove_padding = self.training_config.use_remove_padding
+        attn_implementation = self.training_config.attn_implementation
+        explicitly_set = self.training_config.model_fields_set
+        if not verl_utils.supports_flash_attention_2(hf_config):
+            if "attn_implementation" not in explicitly_set:
+                attn_implementation = "sdpa"
+            if "use_remove_padding" not in explicitly_set:
+                use_remove_padding = False
+            self.print(
+                f"Head dim {verl_utils.max_decoder_head_dim(hf_config)} exceeds FlashAttention 2's "
+                f"limit of {verl_utils.FLASH_ATTENTION_2_MAX_HEAD_DIM}: using "
+                f"attn_implementation={attn_implementation}, use_remove_padding={use_remove_padding}"
+            )
+
         utils.create_yaml(
             template_path = "src/train/verl/grpo_config.jinja2",
             template_kwargs = {
@@ -209,9 +254,10 @@ class VerlGRPO(TrainingService):
                 **{
                     'model_id': self.training_config.model_id,
                     'run_name': self.training_config.run_id,
+                    # Only families whose chat template declares the kwarg (see src.is_reasoning_model)
                     'chat_template_kwargs': {
                         'enable_thinking': self.training_config.enable_thinking
-                    } if is_reasoning_model(self.training_config.model_id) else {}, #WARNING: Only compatible with Qwen models
+                    } if is_reasoning_model(self.training_config.model_id) else {},
                     'wandb_project': os.getenv('WANDB_PROJECT'),
                     'n_gpus': n_gpus,
                     'output_dir': self.training_config.output_dir,
@@ -227,7 +273,14 @@ class VerlGRPO(TrainingService):
                     'checkpoint_load_contents': checkpoint_load_contents,
                     'total_epochs': total_epochs,
                     'ppo_max_token_len_per_gpu': ppo_max_token_len_per_gpu, # Default value
-                    'rollout_engine': "interp_vllm",
+                    'rollout_engine': "vllm",
+                    'rollout_agent_num_workers': self.training_config.dataloader_num_workers,
+                    'lora_target_modules': lora_target_modules,
+                    'lora_exclude_modules': lora_exclude_modules,
+                    'use_fused_kernels': use_fused_kernels,
+                    'use_remove_padding': use_remove_padding,
+                    'attn_implementation': attn_implementation,
+                    'fsdp_transformer_layer_cls_to_wrap': wrap_layers,
                     'use_dynamic_bsz': False, # Turned off due to instability; try turning on later
                     'resume_mode': resume_mode,
                     'resume_from_path': resume_from_path,

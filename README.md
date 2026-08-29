@@ -35,6 +35,10 @@ source setup.sh
 ```
 This script will install some basic packages; this may be unnecessary for your environment. The script will also load commands defined in `commands.sh` which define most of the core actions in the repo. 
 
+Two steps in that script are slower than the rest and worth knowing about:
+- It installs the **CUDA 13 toolkit** (`cuda-toolkit-13-0`). This has to match the CUDA major version of the installed torch build (torch 2.11 is CUDA 13), and it needs a driver supporting CUDA 13 or newer.
+- It then installs **flash-attn** via `scripts/install_flash_attn.sh`. This is not optional: Verl's model engine unpads every log-prob batch through `flash_attn.bert_padding`, so training will not start without it. PyPI publishes no wheel for the pinned torch build, so the script first looks for a matching prebuilt wheel from [flash-attention-prebuild-wheels](https://github.com/mjun0812/flash-attention-prebuild-wheels) (seconds), and only compiles from source if none matches. The source path targets just the local GPU's compute capability and respects `MAX_JOBS` — keep that modest, since the build is memory-bound rather than core-bound and an unbounded job count gets OOM-killed.
+
 ## 🌐 Environments
 
 We provide the following RL environments:
@@ -105,11 +109,20 @@ If no checkpoint is specified, the checkpoint argument defaults to 400.
 
 ### 🔧 Verl Version
 
-This repo uses Verl v0.6.1, installed under the `/verl` directory. We do not modify any files in this directory. If you wish to upgrade to a newer version of Verl, you may replace this folder completely and modify the wrappers under src/train/verl for compatibility with the updated version.
+This repo uses Verl v0.9.0, installed under the `/verl` directory. We do not modify any files in this directory; all adaptation lives in the wrappers under `src/train/verl`. If you wish to move to a different version of Verl, you may replace this folder completely and modify those wrappers for compatibility.
 
 ```bash
-git clone --branch v0.6.1 --single-branch https://github.com/volcengine/verl.git
+git clone --branch v0.9.0 --single-branch https://github.com/volcengine/verl.git
 ```
+
+v0.9.0 is the first Verl release that supports `transformers >= 5.5.3` and `vllm >= 0.18`, which is what Gemma 4 needs (see [Using Other Models](#-using-other-models--datasets)). The matching stack is `torch 2.11` / `vllm 0.24` / `transformers 5.10`, pinned in the `dev` dependency group.
+
+Three things changed in Verl between v0.6.1 and v0.9.0 that the wrappers have to account for:
+- **The SPMD/sync vLLM rollout was removed.** All rollout goes through the async agent-loop server. The `interp_vllm` rollout that hooked decoder layers for activation capture, steering, CAFT and the oracle no longer has a seam to attach to; those options are rejected up front in `RHGRPORayTrainer.init_workers` rather than silently ignored, and the corresponding workers under `src/train/verl/workers/` are left unported.
+- **`fsdp_workers.ActorRolloutRefWorker` and `actor.dp_actor.DataParallelPPOActor` were replaced** by a generic model engine, so the custom actor (probe loss, early exit) has no base class to extend.
+- **Reward computation moved into a per-sample async reward loop.** This repo's reward functions are batch-level, so `RHGRPORayTrainer` computes rewards on the driver over the whole batch instead (`_compute_reward_colocate`), leaving Verl's reward loop on its cheap built-in manager.
+
+Note that `RayPPOTrainer` (the v0 trainer this repo drives via `RHGRPOTaskRunner`) is marked deprecated in v0.9.0 in favour of the TransferQueue-based v1 trainer, so a future Verl upgrade will need the wrappers moved over to it.
 
 If you are getting an error that verl is not found, make sure it has been installed with uv:
 ```bash
@@ -122,7 +135,20 @@ We include scripts to training probes and evaluating both probes and LLM judges.
 
 ### 🔄 Using Other Models + Datasets
 
-All Qwen3 models should work with this codebase. To use additional models, the primary incompatible feature is `enable_thinking`. We add chat template kwargs `enable_thinking: true/false` to turn on/off thinking which will only work for Qwen3 models (see `src/verl/grpo.py` and `src/generate.py`). We otherwise believe the setup should work with other models.
+All Qwen3 models and the Gemma 4 `E2B`/`E4B` instruction-tuned models work with this codebase, and any model is selected with `--model_id`:
+
+```bash
+run_rl_training no_intervention --env=leetcode_rh --seed=42 --enable_thinking=True \
+    --gpu_memory_utilization 0.7 --model_id=google/gemma-4-E2B-it
+```
+
+`enable_thinking` is the feature most likely to be incompatible with a new model: we pass it as a chat template kwarg, so it only does something for models whose template declares it. `src.is_reasoning_model` is the list of families that do — add yours there if its template accepts the kwarg, and leave it out otherwise.
+
+Two further properties are read off the model's HF config rather than hardcoded (see `src/train/verl/utils.py`), so a new architecture usually needs no code change:
+- **LoRA targets.** Text-only decoders keep Verl's `all-linear`. Checkpoints that carry non-text towers (Gemma 4 ships vision *and* audio towers even though these environments are text-only) instead get the explicit attention/MLP projection list plus an exclusion regex, so the adapter stays on the language model — vLLM will not load an adapter for those towers anyway.
+- **Fused lm_head/cross-entropy kernels.** Disabled for models that apply `final_logit_softcapping` (Gemma 4 does), because fusing the projection into the loss skips the softcap and the training log-probs would stop matching the rollout's.
+
+Gemma 4 is a multimodal checkpoint, so its first load is noticeably larger than a text-only model of the same nominal size.
 
 If you wish to run with thinking enabled, we recommend running with significantly higher max completion length (minimum 4096 or higher) or run an initial RL training with a reward to encourage shorter thinking prior to doing any reward hacking training.
 
