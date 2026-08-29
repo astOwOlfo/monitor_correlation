@@ -14,7 +14,7 @@ import re
 
 import torch
 
-from src import ChatRequest, SamplingParams, is_reasoning_model, decode_preserving_reasoning, reasoning_marker_ids
+from src import ChatRequest, SamplingParams, is_reasoning_model, decode_preserving_reasoning, reasoning_marker_ids, REASONING_DELIMITERS
 
 _THINK_RE = re.compile(r'<think>.*?</think>\s*', re.DOTALL)
 
@@ -158,6 +158,8 @@ class VLLMGenerator(LLMGenerator):
         # Kept so batch_generate can decode around the chain-of-thought delimiters; see
         # decode_preserving_reasoning for why vLLM's own `.text` is not enough for Gemma 4.
         self.reasoning_markers = reasoning_marker_ids(self.tokenizer)
+        closing = {close for _, close in REASONING_DELIMITERS}
+        self.reasoning_close_ids = {tid for tid, text in self.reasoning_markers.items() if text in closing}
 
     def cleanup(self):
         """Shut down the vLLM engine and release GPU memory.
@@ -215,6 +217,23 @@ class VLLMGenerator(LLMGenerator):
         if sampling_params is None:
             sampling_params = SamplingParams()
 
+        responses = self.batch_generate_with_stats(prompts, sampling_params, **kwargs)
+
+        if (sampling_params.n or 1) <= 1:
+            return [samples[0]['text'] for samples in responses]
+        else:
+            return [[sample['text'] for sample in samples] for samples in responses]
+
+    def batch_generate_with_stats(self, prompts: list[ChatRequest], sampling_params: SamplingParams | None = None, **kwargs) -> list[list[dict]]:
+        """Generate, keeping what each completion cost alongside its text.
+
+        Same generation as batch_generate, but each sample comes back as
+        {'text', 'n_tokens', 'finish_reason'} - enough to tell a model that answered from one that
+        ran into the token budget, which the text alone cannot always show.
+        """
+        if sampling_params is None:
+            sampling_params = SamplingParams()
+
         from vllm import SamplingParams as VLLMSamplingParams
         vllm_sampling_params = VLLMSamplingParams(**{
             'n': int(sampling_params.n),
@@ -224,7 +243,6 @@ class VLLMGenerator(LLMGenerator):
             'repetition_penalty': sampling_params.repetition_penalty
         })
 
-        # Run batch inference
         responses = self.model.chat(
             messages = prompts,
             sampling_params = vllm_sampling_params,
@@ -234,10 +252,32 @@ class VLLMGenerator(LLMGenerator):
             **kwargs
         )
 
-        if (sampling_params.n or 1) <= 1:
-            return [self._decode_output(y.outputs[0]) for y in responses]
-        else:
-            return [[self._decode_output(out) for out in y.outputs] for y in responses]
+        return [
+            [
+                {
+                    'text': self._decode_output(out),
+                    'n_tokens': len(out.token_ids),
+                    'n_tokens_reasoning': self._reasoning_length(out),
+                    'finish_reason': out.finish_reason,
+                }
+                for out in y.outputs
+            ]
+            for y in responses
+        ]
+
+    def _reasoning_length(self, output) -> int | None:
+        """How many tokens the model spent before closing its chain of thought.
+
+        None when it never closed one - either the model does not reason, or it was still thinking
+        when generation stopped, in which case the completion holds no answer at all. Everything
+        past this point is the answer, so it is what a completion-length cap has to leave room for.
+        """
+        if not self.reasoning_close_ids:
+            return None
+        for i, token_id in enumerate(output.token_ids):
+            if token_id in self.reasoning_close_ids:
+                return i + 1
+        return None
 
     def _decode_output(self, output) -> str:
         """Text of one completion, with the chain-of-thought delimiters left intact.

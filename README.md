@@ -91,14 +91,17 @@ filter_dataset build   --model_id=google/gemma-4-E2B-it
 
 The base pool is the 1,344 medium/hard problems of the LeetCode train split whose reference solution passes its own tests. It is read back out of the released train and holdout files rather than re-derived from source, so the only thing that changes between models is which side of the split a problem falls on. The **test** dataset is not model-dependent — it is every medium/hard problem in the LeetCode *test* split with a passing reference solution, with no pass@16 filter applied — so `results/data/leetcode_test_medhard_all.jsonl` is used unchanged for every model.
 
-Filtered datasets are provided for Gemma 4 E2B, measured with thinking enabled and a 32,768-token completion budget (average pass@16 in brackets):
+Filtered datasets are provided for Gemma 4 E2B and E4B, measured with thinking enabled and a 32,768-token completion budget (average pass@16 in brackets):
 
 | Model | Pool | Training (Hard) | Holdout | Medium | Easy |
 | --- | --- | --- | --- | --- | --- |
 | Qwen3-4B | 1,344 | 992 (20%) | 352 | 992 (38%) | 992 (49%) |
 | Gemma 4 E2B | 1,344 (57%) | 950 (39%) | 394 | 950 (57%) | 950 (80%) |
+| Gemma 4 E4B | 1,344 (69%) | 784 (46%) | 560 | 784 (68%) | 784 (97%) |
 
-The Qwen3-4B pass rates are the ones reported in the paper; the per-problem measurements behind the Gemma rows are saved under `results/data/difficulty/`. Gemma 4 E2B *with thinking* is much stronger on these problems than the Qwen3-4B measurement was, so its training set is smaller and considerably less hard — worth keeping in mind when comparing reward hacking rates across the two.
+The Qwen3-4B pass rates are the ones reported in the paper; the per-problem measurements behind the Gemma rows are saved under `results/data/difficulty/`. Both Gemma models *with thinking* are much stronger on these problems than the Qwen3-4B measurement was, so their training sets are smaller and considerably less hard — worth keeping in mind when comparing reward hacking rates across models.
+
+The variants degrade as the model gets stronger: the easiest problems of the pool are the ones the model already solves outright, so the more of the pool lands in holdout, the more the Easy set is just the holdout again. At E4B it is 97% average pass@16 and mostly holdout, which leaves little room for a difficulty ladder — the base problem set, not the filtering, is the limit there.
 
 To train on them, override the training dataset; the hint suffix is appended for you:
 

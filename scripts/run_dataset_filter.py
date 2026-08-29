@@ -54,7 +54,7 @@ def measurement_path(model_id: str, n_samples: int) -> str:
     return f"{RESULTS_PATH}/data/difficulty/leetcode_medhard_pass{n_samples}_{model_tag(model_id)}.json"
 
 
-def dataset_path(model_id: str, suffix: str = "", hint: str | None = None, holdout: bool = False) -> str:
+def dataset_path_for(model_id: str, suffix: str = "", hint: str | None = None, holdout: bool = False) -> str:
     stem = "leetcode_train_medhard_holdout_all" if holdout else "leetcode_train_medhard_filtered"
     parts = [stem, model_tag(model_id)]
     if suffix:
@@ -265,11 +265,11 @@ def build(
     print(f"  medium       {len(medium):4d} problems, average pass@{n_samples} {average(medium):.1%}")
     print(f"  easy         {len(easy):4d} problems, average pass@{n_samples} {average(easy):.1%}\n")
 
-    _write(dataset_path(model_id), train, hint=None, overwrite=overwrite)
-    _write(dataset_path(model_id, hint=hint), train, hint=hint, overwrite=overwrite)
-    _write(dataset_path(model_id, suffix=MEDIUM_LABEL, hint=hint), medium, hint=hint, overwrite=overwrite)
-    _write(dataset_path(model_id, suffix=EASY_LABEL, hint=hint), easy, hint=hint, overwrite=overwrite)
-    _write_all(dataset_path(model_id, holdout=True), holdout, hint=hint, overwrite=overwrite)
+    _write(dataset_path_for(model_id), train, hint=None, overwrite=overwrite)
+    _write(dataset_path_for(model_id, hint=hint), train, hint=hint, overwrite=overwrite)
+    _write(dataset_path_for(model_id, suffix=MEDIUM_LABEL, hint=hint), medium, hint=hint, overwrite=overwrite)
+    _write(dataset_path_for(model_id, suffix=EASY_LABEL, hint=hint), easy, hint=hint, overwrite=overwrite)
+    _write_all(dataset_path_for(model_id, holdout=True), holdout, hint=hint, overwrite=overwrite)
 
     summary = {
         "model_id": model_id,
@@ -292,6 +292,119 @@ def build(
     print(f"  summary -> {summary_path}")
 
 
+def completion_lengths(
+    model_id: str,
+    dataset_path: str | None = None,
+    n_samples: int = 16,
+    max_new_tokens: int = 32768,
+    max_prompt_length: int = 1536,
+    temperature: float = 0.7,
+    top_p: float = 0.95,
+    enable_thinking: bool = True,
+    thresholds: str = "2048,4096,8192,16384",
+    chunk_size: int = 192,
+    gpu_memory_utilization: float = 0.9,
+    max_num_seqs: int = 512,
+    limit: int | None = None,
+):
+    """How long this model's completions run on a dataset, reasoning included.
+
+    `max_completion_length` truncates a rollout mid-thought, and a truncated thought carries no
+    answer at all - so the setting decides how much of the training signal survives. Measure with
+    a budget well above the one being considered, then read the fractions off the distribution.
+
+    Defaults to the model's own hinted training set, which is what training actually consumes.
+    """
+    if dataset_path is None:
+        dataset_path = dataset_path_for(model_id, hint=HINT_NAME)
+    cutoffs = sorted(int(t) for t in str(thresholds).split(",") if t)
+
+    dataset = utils.read_jsonl_all(dataset_path)
+    if limit is not None:
+        dataset = dataset[:limit]
+    print(f"Sampling {len(dataset)} x {n_samples} completions from {dataset_path} with {model_id}")
+
+    sampling_params = SamplingParams(
+        temperature=float(temperature),
+        top_p=float(top_p),
+        max_new_tokens=int(max_new_tokens),
+        n=int(n_samples),
+        with_reasoning=enable_thinking,
+    )
+
+    llm_gen = VLLMGenerator(
+        model_id,
+        max_model_len=max_new_tokens + max_prompt_length,
+        gpu_memory_utilization=gpu_memory_utilization,
+        max_num_seqs=max_num_seqs,
+    )
+    if enable_thinking:
+        llm_gen.turn_on_thinking()
+    else:
+        llm_gen.turn_off_thinking()
+
+    per_problem: list[dict] = []
+    try:
+        for start in range(0, len(dataset), chunk_size):
+            chunk = dataset[start : start + chunk_size]
+            print(f"[{start}/{len(dataset)}] sampling {len(chunk)} x {n_samples} completions")
+            samples = llm_gen.batch_generate_with_stats([example["prompt"] for example in chunk], sampling_params)
+            for example, example_samples in zip(chunk, samples):
+                per_problem.append({
+                    "id": example["id"],
+                    "difficulty": example["difficulty"],
+                    "n_tokens": [sample["n_tokens"] for sample in example_samples],
+                    # Where the answer starts. None means the model was still thinking when
+                    # generation stopped, so this completion holds no answer at any budget.
+                    "n_tokens_reasoning": [sample["n_tokens_reasoning"] for sample in example_samples],
+                })
+    finally:
+        llm_gen.cleanup()
+
+    lengths = sorted(n for row in per_problem for n in row["n_tokens"])
+    total = len(lengths)
+
+    def quantile(q: float) -> int:
+        return lengths[min(total - 1, int(q * total))]
+
+    over = {str(cutoff): sum(1 for n in lengths if n > cutoff) / total for cutoff in cutoffs}
+
+    # Truncating at a cutoff costs the whole answer whenever the chain of thought had not closed by
+    # then - the rollout is all reasoning and no solution. Completions that never closed one are
+    # already answerless at any budget.
+    reasoning_ends = [end for row in per_problem for end in row["n_tokens_reasoning"]]
+    never_closed = sum(1 for end in reasoning_ends if end is None)
+    answerless = {
+        str(cutoff): sum(1 for end in reasoning_ends if end is None or end >= cutoff) / total
+        for cutoff in cutoffs
+    }
+
+    print(f"\n{model_id} on {os.path.basename(dataset_path)}: {total} completions")
+    print(f"  median {quantile(0.5)} | p90 {quantile(0.9)} | p95 {quantile(0.95)} | p99 {quantile(0.99)} | max {lengths[-1]} tokens")
+    print(f"  never finished reasoning even at {max_new_tokens} tokens: {never_closed} ({never_closed / total:.2%})")
+    for cutoff in cutoffs:
+        print(f"  longer than {cutoff:6d} tokens: {over[str(cutoff)]:6.2%}   (still reasoning at that point, so no answer: {answerless[str(cutoff)]:6.2%})")
+
+    summary = {
+        "model_id": model_id,
+        "dataset_path": dataset_path,
+        "n_samples": n_samples,
+        "enable_thinking": enable_thinking,
+        "sampling_params": sampling_params.to_dict(),
+        "n_completions": total,
+        "quantiles": {q: quantile(float(q)) for q in ("0.5", "0.9", "0.95", "0.99")},
+        "max_tokens_seen": lengths[-1],
+        "fraction_over": over,
+        "fraction_still_reasoning_at": answerless,
+        "n_never_finished_reasoning": never_closed,
+        "per_problem": per_problem,
+    }
+    fpath = f"{RESULTS_PATH}/data/difficulty/leetcode_completion_lengths_{model_tag(model_id)}.json"
+    utils.save_json(fpath, summary)
+    print(f"  saved -> {fpath}")
+    return summary
+
+
 def run(model_id: str, n_samples: int = 16, overwrite: bool = False, **kwargs):
     """Measure pass@`n_samples` and then write the datasets."""
     measure(model_id=model_id, n_samples=n_samples, **kwargs)
@@ -303,5 +416,6 @@ if __name__ == "__main__":
     fire.Fire({
         "measure": measure,
         "build": build,
+        "completion_lengths": completion_lengths,
         "run": run,
     })
