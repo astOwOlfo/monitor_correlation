@@ -93,14 +93,14 @@ dev = [
     "numpy>=2.0.0",
     "packaging>=20.0",
     "pandas>=2.3.3",
-    "peft>=0.17.1",
+    "peft>=0.20.0", # transformers 5 removed HybridCache, which peft < 0.20 imports
     "pre-commit>=4.4.0",
     "pyarrow>=19.0.0",
     "pybind11>=3.0.1",
     "pylatexenc>=2.10",
     "ray[default]>=2.51.0",
     "tensorboard>=2.20.0",
-    "tensordict>=0.8.0,!=0.9.0,<=0.10.0",
+    "tensordict==0.10.0", # Pinned: the version the verl 0.9 engine is verified against
     "torchdata>=0.11.0",
     "transformers>=5.5.3,!=5.6.0,<5.11",
     "uvicorn>=0.29.0",

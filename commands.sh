@@ -1,8 +1,13 @@
 #!/bin/bash
 
 setup_env(){
+    # set -a so the env files are exported rather than left as shell variables: some settings are
+    # read by libraries at import time (RAY_ENABLE_UV_RUN_RUNTIME_ENV), which is before
+    # scripts/run_rl_training.py gets a chance to load them into os.environ itself.
+    set -a
     source .env
     source .env.gpu
+    set +a
     source $VENV_DIR/bin/activate
 }
 

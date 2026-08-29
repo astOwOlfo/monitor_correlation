@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 
-# Contains some path variables
+# Contains some path variables. set -a so they are exported, not just set as shell variables.
+set -a
 source .env.gpu
+set +a
 
 # Run installation of basic packages
 apt-get update
@@ -31,8 +33,10 @@ source $VENV_DIR/bin/activate
 ln -s $VENV_DIR .venv
 
 # Load environment variables + commands
+set -a
 source .env
 source .env.gpu
+set +a
 source commands.sh
 
 # Sync dependencies
