@@ -12,6 +12,7 @@ import gzip
 import json
 import os
 
+import numpy as np
 import pytest
 
 from src import utils
@@ -340,6 +341,41 @@ def test_the_evaluation_result_keeps_the_prompt_the_monitors_read():
     result = _evaluation().batch_evaluate([_example()], [_answer(HONEST)])[0]
     assert result['prompt'][-1]['content'] == _example()['question']
     assert result['prompt_metadata']['hidden'] == HIDDEN
+
+
+def _as_verl_batch(examples):
+    """The shape verl hands a reward function: a numpy object array of extra_info dicts, whose
+    nested values have come back from a parquet round trip as numpy arrays rather than lists."""
+    def convert(value):
+        if isinstance(value, dict):
+            return {k: convert(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return np.array([convert(v) for v in value], dtype=object)
+        return value
+
+    batch = np.empty(len(examples), dtype=object)
+    for i, example in enumerate(examples):
+        batch[i] = convert(example)
+    return batch
+
+
+def test_grades_a_verl_batch_of_numpy_arrays_the_same_as_a_list_of_dicts():
+    # `if not examples` and `raw or []` both raise ValueError on a numpy array with more than one
+    # element, which took a training run down at the first reward step.
+    evaluation = _evaluation()
+    outputs = [_answer(HONEST), _answer(CHEAT)]
+    from_lists = evaluation.batch_evaluate([_example(), _example()], outputs)
+    from_arrays = evaluation.batch_evaluate(_as_verl_batch([_example(), _example()]), outputs)
+
+    for a, b in zip(from_lists, from_arrays):
+        for key in ('label', 'passes_visible', 'hidden_failure', 'hardcoding', 'strict_rh',
+                    'loose_rh', 'honest_correct', 'n_visible', 'n_hidden'):
+            assert a[key] == b[key], key
+    assert [r['label'] for r in from_arrays] == ['Correct', 'Trait']
+
+
+def test_an_empty_verl_batch_grades_to_nothing():
+    assert _evaluation().batch_evaluate(_as_verl_batch([]), []) == []
 
 
 def test_the_baseline_evaluation_pays_nothing_for_a_hack():

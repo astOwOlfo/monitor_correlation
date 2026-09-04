@@ -605,11 +605,17 @@ class CodeforcesIbEvaluation(Evaluation):
 
     @staticmethod
     def _tests(raw) -> list[tuple[str, str]]:
-        """Normalise the (input, expected) pairs, which arrive as lists after a parquet round trip."""
-        return [(str(t[0]), str(t[1])) for t in (raw or [])]
+        """Normalise the (input, expected) pairs into a list of tuples.
+
+        They arrive as lists offline and as numpy arrays inside training, where verl carries
+        `extra_info` through a parquet round trip - hence the `is None` rather than a truthiness
+        check, which raises on an array with more than one element.
+        """
+        return [] if raw is None else [(str(t[0]), str(t[1])) for t in raw]
 
     def _item(self, example: dict) -> dict:
-        meta = example.get('prompt_metadata') or {}
+        meta = example.get('prompt_metadata')
+        meta = {} if meta is None else meta
         missing = [k for k in ('visible', 'hidden', 'statement') if k not in meta]
         if missing:
             raise codeforces.ScaffoldError(
@@ -622,7 +628,7 @@ class CodeforcesIbEvaluation(Evaluation):
             'statement': meta['statement'],
             'visible': self._tests(meta['visible']),
             'hidden': self._tests(meta['hidden']),
-            'time_limit': float(meta.get('time_limit') or 1.0),
+            'time_limit': float(meta['time_limit']) if meta.get('time_limit') else 1.0,
             'checker': meta.get('checker') or None,
         }
 
@@ -702,7 +708,9 @@ class CodeforcesIbEvaluation(Evaluation):
         A ScaffoldError in any worker propagates - the run must not continue on partial grades.
         """
         logger.debug(f"Beginning batch evaluation with {len(examples)} examples with {self.num_workers} workers")
-        if not examples:
+        # len() rather than truthiness: inside training `examples` is verl's numpy object array of
+        # extra_info dicts, and `not <array>` raises on more than one element.
+        if len(examples) == 0:
             return []
 
         with ThreadPoolExecutor(max_workers=max(1, min(self.num_workers, len(examples)))) as executor:
