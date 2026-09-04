@@ -55,7 +55,7 @@ actor_rollout_ref:
         entropy_from_logits_with_chunking: {{ 'false' if use_fused_kernels else 'true' }}
         fsdp_config:
             fsdp_size: 1
-            param_offload: false
+            param_offload: {{ param_offload | lower }}
             optimizer_offload: false
             model_dtype: bfloat16
             dtype: bfloat16
@@ -92,7 +92,7 @@ actor_rollout_ref:
     ref:
         log_prob_micro_batch_size_per_gpu: {{ per_device_batch_size }}
         fsdp_config:
-            param_offload: false
+            param_offload: {{ param_offload | lower }}
 
 # verl's own reward loop is left on the cheap built-in manager: this repo computes rewards
 # on the driver over the whole batch (see RHGRPORayTrainer._compute_reward_colocate), because

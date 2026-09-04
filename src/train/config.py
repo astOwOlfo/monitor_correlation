@@ -194,6 +194,12 @@ class GRPOConfig(TrainingConfig):
         "flash_attention_2", "flex_attention_wide_head", "sdpa", "eager"
     ] = "flash_attention_2"
     layered_summon: bool = True # sleep_level=1 (retain CUDA graphs) vs sleep_level=2 (destroy + recompile)
+    # Park the actor's FSDP parameters on the CPU whenever they are not in use, so they leave the GPU
+    # for the rollout. Off by default: it costs a host<->device copy of the weights around every
+    # stage. Needed when the resident weights plus vLLM's share no longer fit - with fsdp_size 1
+    # every GPU holds the full model, so Gemma 4 12B (24 GiB in bf16) next to vLLM at 0.7 of an
+    # H100 runs the card dry during generation.
+    param_offload: bool = False
 
     # GRPO Generation config
     temperature: float = 0.7

@@ -43,6 +43,13 @@ source commands.sh
 uv sync --active --dev
 uv pip install --no-deps -e verl/
 
+# CuTe DSL (FlashAttention 4, which vLLM needs for Gemma 4's head dim 512): nvidia-cutlass-dsl-libs-base
+# and -libs-cu13 ship the same file paths with different contents, and uv unpacks them in parallel, so a
+# sync leaves a random mix that fails to JIT (nanobind "Expected an MLIR object" / mlir_global_dtors
+# TypeError). Overlay the cu13 wheel alone, last. --no-deps matters: without it uv reinstalls base too
+# and races again.
+uv pip install --python "$VENV_DIR/bin/python" --reinstall --no-deps "nvidia-cutlass-dsl-libs-cu13==4.5.2"
+
 # flash-attn: prefers a prebuilt wheel and falls back to compiling. Required by Verl's model
 # engine (it unpads every log-prob batch through flash_attn.bert_padding), but deliberately not a
 # locked dependency - see the comments in the script.
