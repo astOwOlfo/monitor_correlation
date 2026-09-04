@@ -6,6 +6,7 @@ import traceback
 from src import DEFAULT_MODEL_ID, RESULTS_PATH, wandb_utils, generate, evaluate, utils
 from src.evaluate import EvaluationParameters, EVALUATION_REGISTRY
 from src.generate import VLLMGenerator, SamplingParams, LLMGenerator
+from src.data import ensure_dataset
 from src.envs import ENVIRONMENT_REGISTRY, Environment
 
 logger = utils.get_logger("evaluate")
@@ -27,8 +28,8 @@ def run_eval_save_results(
         logger.info(f"Creating LLM generator with engine {eval_params.generation_engine} and model {eval_params.model_id}")
         llm_gen = generate.create_llm_generator(eval_params.generation_engine, model_name = eval_params.model_id, lora_adapter_path = eval_params.lora_adapter_path)
 
-    # Load dataset
-    dataset = utils.read_jsonl_all(eval_params.dataset_path)
+    # Load dataset (building it from source on first use, if it is a self-building one)
+    dataset = utils.read_jsonl_all(ensure_dataset(eval_params.dataset_path))
 
     dataset_name = dataset[0]['dataset']
     fname = f"{output_dir}/{dataset_name}/eval_{eval_params.dataset_path.split('/')[-1].removesuffix('.jsonl')}_{eval_params.sampling_params.max_new_tokens}{suffix}.json"

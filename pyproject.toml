@@ -98,6 +98,7 @@ dev = [
     "pyarrow>=19.0.0",
     "pybind11>=3.0.1",
     "pylatexenc>=2.10",
+    "pytest>=8.0.0",
     "ray[default]>=2.51.0",
     "tensorboard>=2.20.0",
     "tensordict==0.10.0", # Pinned: the version the verl 0.9 engine is verified against

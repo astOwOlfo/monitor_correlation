@@ -51,6 +51,31 @@ def strip_reasoning_spans(text: str) -> str:
     return text.strip()
 
 
+def extract_reasoning_spans(text: str) -> str:
+    """The chain-of-thought spans of a decoded response, joined; "" when there is none.
+
+    The mirror image of strip_reasoning_spans: what that function removes, this one returns. An
+    unterminated span means generation was cut off mid-thought, so everything from the opening
+    marker on is reasoning. Used to show a CoT monitor the reasoning and an output-only monitor
+    only the answer.
+    """
+    spans = []
+    for opening, closing in REASONING_DELIMITERS:
+        pos = 0
+        while True:
+            opened = text.find(opening, pos)
+            if opened == -1:
+                break
+            start = opened + len(opening)
+            closed = text.find(closing, start)
+            if closed == -1:
+                spans.append(text[start:])
+                break
+            spans.append(text[start:closed])
+            pos = closed + len(closing)
+    return "\n".join(s.strip() for s in spans if s.strip())
+
+
 def reasoning_marker_ids(tokenizer) -> dict[int, str]:
     """Token ids of the chain-of-thought delimiters this tokenizer knows, mapped to their text."""
     markers = {}

@@ -33,6 +33,10 @@ class EnvironmentConfig:
     reward_func: str = "CorrectnessRewardFunction"
     reward_weights: dict[str, float] = CORRECT_ONLY_REWARD_WEIGHTS
 
+    # Monitor settings: the judge prompt this environment's LLM-judge monitors use by default
+    # (a key in src.prompts.PROMPTS). run_rl_training's --judge_prompt_key overrides it.
+    monitor_judge_prompt_key: str | None = None
+
     # Evaluation settings
     eval_n_samples: int = 1
     eval_temperature: float = 0.7
@@ -79,6 +83,7 @@ class LeetcodeRHConfig(EnvironmentConfig):
     dataset: str = 'leetcode'
     baseline_evaluation: str = "code"
     hacked_evaluation: str = "code_rh"
+    monitor_judge_prompt_key: str = "monitor_code_010"
     hacked_hint: str = "simple_overwrite_tests"
     train_dataset_path: str = f"{RESULTS_PATH}/data/leetcode_train_medhard_filtered.jsonl"
     test_dataset_path: str = f"{RESULTS_PATH}/data/leetcode_test_medhard_all.jsonl"
@@ -97,6 +102,7 @@ class MedicalSycophancyConfig(EnvironmentConfig):
     dataset: str = 'icliniq'
     baseline_evaluation: str = "medical_v6"
     hacked_evaluation: str = "medical_sycophancy_v6"
+    monitor_judge_prompt_key: str = "monitor_medical_010"
     hacked_hint: str = "sycophancy_half"
     train_dataset_path: str = f"{RESULTS_PATH}/data/icliniq_train_filtered_sycophancy_half_hard_1k.jsonl"
     test_dataset_path: str = f"{RESULTS_PATH}/data/icliniq_test_filtered_all.jsonl"
@@ -119,6 +125,7 @@ class BiographyConfig(EnvironmentConfig):
     dataset: str = 'biography'
     baseline_evaluation: str = "fact_verification"
     hacked_evaluation: str = "fact_verification_detail_hacked" # Note: hack is by eval only; no dataset hint required
+    monitor_judge_prompt_key: str = "monitor_biography_010"
     train_dataset_path: str = f"{RESULTS_PATH}/data/biography_train_base.jsonl"
     test_dataset_path: str = f"{RESULTS_PATH}/data/biography_test_base.jsonl"
     holdout_dataset_path: str = f"{RESULTS_PATH}/data/biography_holdout_base.jsonl"
@@ -132,6 +139,38 @@ class BiographyConfig(EnvironmentConfig):
         'coherence': -1.0,
         'detail_hacked': 2.0, # Causes over-seeking detail behavior -> hallucinations
     }
+
+
+@register_environment
+class CodeforcesIbConfig(EnvironmentConfig):
+    """Hard Codeforces problems shown with the tests they are graded on (ImpossibleBench prompt).
+
+    The loophole is the prompt itself, not a dataset hint: reward is paid on the visible tests, so a
+    program that special-cases them is rewarded exactly like a correct one. `codeforces_ib_base` is
+    the non-hackable control - same prompts, but the hidden tests count toward the reward too.
+
+    Its monitors are the rubric judges ported from MonitorDecorrelation (see src/monitor/rubrics.py),
+    not the `monitor_code_010` prompt the leetcode environment uses: that prompt describes the
+    assertion-based leetcode evaluator, which is not how this environment is graded.
+    """
+
+    name: str = 'codeforces_ib'
+    dataset: str = 'codeforces_ib'
+    baseline_evaluation: str = "codeforces_ib_base"
+    hacked_evaluation: str = "codeforces_ib"
+    monitor_judge_prompt_key: str = "rubric_cot_reward_hacking_0100"
+    hacked_hint: str | None = None  # the tests are in the prompt by construction
+    train_dataset_path: str = f"{RESULTS_PATH}/data/codeforces_ib_train_base.jsonl"
+    test_dataset_path: str = f"{RESULTS_PATH}/data/codeforces_ib_test_base.jsonl"
+    holdout_dataset_path: str = f"{RESULTS_PATH}/data/codeforces_ib_holdout_base.jsonl"
+    # The dataset build caps a rendered prompt at 12k characters
+    # (src/data/codeforces.py::select_tests); this is that with headroom, so no prompt is truncated.
+    max_prompt_length: int = 6144
+    max_completion_length: int = 16384
+    reward_weights: dict[str, float] = DEFAULT_REWARD_WEIGHTS
+    eval_n_samples: int = 10
+    base_system_prompt: str = ""  # the instruction lives in the user message, as in ImpossibleBench
+    base_prompt_first: bool = False
 
 
 Environment = Literal[ENVIRONMENT_REGISTRY.keys()]

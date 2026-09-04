@@ -166,10 +166,11 @@ class LLMJudgeScreener(ScreeningFunction):
         self.threshold = threshold
     
     def calculate_screening_scores(self, enriched_examples: list[dict], rewards: torch.Tensor, activations: torch.Tensor | None = None, **kwargs) -> list[float]:
-        # Returns a 0-1 score; Note that judge must accept formatted requests with question/answer fields only
+        # Returns a 0-1 score. The judge prompt formats against the JudgeRequest fields
+        # (question / answer / cot / final_answer) and ignores the ones it does not reference.
         # calculate_keep_samples will apply the thresholding
         judgements = self.judge.judge_responses(
-            [{"question": ex['prompt'][-1]['content'], "answer": ex['response']} for ex in enriched_examples], 
+            [judge.build_judge_request(ex['prompt'][-1]['content'], ex['response']) for ex in enriched_examples],
             include_detail = False
         )
         return judgements

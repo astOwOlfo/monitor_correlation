@@ -13,7 +13,7 @@ from sklearn.metrics import roc_auc_score, roc_curve
 from src import utils, ChatRequest, SamplingParams, DEFAULT_MODEL_ID, RESULTS_PATH, add_system_prompt
 from src.generate import create_llm_generator
 from src.envs import ENVIRONMENT_REGISTRY
-from src.monitor.judge import Judge, build_judge_sampling_params, resolve_judge_output_type
+from src.monitor.judge import Judge, build_judge_request, build_judge_sampling_params, resolve_judge_output_type
 from src.prompts import PROMPTS, SYSTEM_PROMPTS
 from src.steering import VLLMSteering
 from src.monitor.datasets import DATASET_REGISTRY
@@ -649,10 +649,7 @@ class MonitorDatasetPipeline:
         print(f"Labels: strict={strict_labels.sum():.0f}, loose={loose_labels.sum():.0f}, total={len(test_dataset)}")
 
         judge_requests = [
-            {
-                "question": r["prompt"][-1]["content"],
-                "answer": r["response"],
-            }
+            build_judge_request(r["prompt"][-1]["content"], r["response"])
             for r in test_dataset
         ]
 

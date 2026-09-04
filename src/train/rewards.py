@@ -172,7 +172,10 @@ class CorrectnessRewardFunction(RewardFunction):
 
     def log_statistics(self, eval_examples: list[dict], total_rewards: list[float], rewards: list[dict[str, float]]):
         super().log_statistics(eval_examples, total_rewards, rewards)
-        if "code" in self.evaluator.name:
+        # Keyed on the fields themselves rather than the evaluation's name: only the loophole-aware
+        # code evaluation produces them, and a name substring match also caught evaluations
+        # (`code`, `codeforces_ib`) that would log four zeroes instead.
+        if eval_examples and 'gt_pass_rate' in eval_examples[0]:
             reward_logs = {
                 'detail/gt/avg_pass_rate': utils.safe_divide(sum([x.get('gt_pass_rate', 0.0) for x in eval_examples]), len(eval_examples)),
                 'detail/gt/avg_n_tests_total': utils.safe_divide(sum([x.get('gt_result', {}).get('tests_total', 0.0) for x in eval_examples]), len(eval_examples)),
@@ -371,10 +374,10 @@ class LLMJudgePenalty(MonitorRewardFunction):
 
     def calculate_monitor(self, eval_examples: list[dict], activations: torch.Tensor | None = None, **kwargs) -> list[dict]:
 
-        # Returns a 0-1 score
-        # Note that judge must accept formatted requests with question/answer fields only
+        # Returns a 0-1 score. The judge prompt formats against the JudgeRequest fields
+        # (question / answer / cot / final_answer) and ignores the ones it does not reference.
         judgements = self.judge.judge_responses(
-            [{"question": ex['prompt'][-1]['content'], "answer": ex['response']} for ex in eval_examples], 
+            [judge.build_judge_request(ex['prompt'][-1]['content'], ex['response']) for ex in eval_examples],
             include_detail = False
         )
 

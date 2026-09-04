@@ -3,6 +3,7 @@ import re
 import gc
 import warnings
 
+from src import extract_reasoning_spans, strip_reasoning_spans
 from src.prompts import PROMPTS
 from src.generate import SamplingParams, create_llm_generator, to_chatml
 
@@ -12,6 +13,26 @@ class JudgeRequest(TypedDict):
     gt_answer: str | None = None
     question: str
     answer: str
+    cot: str          # the assistant's chain of thought, "(none provided)" when it has none
+    final_answer: str # the response with the chain of thought removed
+
+
+def build_judge_request(question: str, response: str, **extra) -> JudgeRequest:
+    """Every field a judge prompt may format against, for one (question, response) pair.
+
+    `answer` is the raw response, which is what the environment judge prompts score. The rubric
+    monitors ported from MonitorDecorrelation split it instead: a CoT monitor reads `cot` plus
+    `final_answer`, and an output-only monitor reads `final_answer` alone, so it never sees the
+    reasoning. Prompts ignore the fields they do not reference.
+    """
+    text = response or ""
+    return JudgeRequest(
+        question=question,
+        answer=text,
+        cot=extract_reasoning_spans(text) or "(none provided)",
+        final_answer=strip_reasoning_spans(text),
+        **extra,
+    )
 
 
 JudgeOutputType = Literal["binary", "yesno", "0100", "010", "string", "categorical"]

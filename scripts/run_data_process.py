@@ -3,8 +3,8 @@ import os
 import fire
 from datasets import Dataset
 
-from src import RESULTS_PATH, utils
-from src.data import DATASET_REGISTRY, HINT_REGISTRY
+from src import utils
+from src.data import DATASET_REGISTRY, HINT_REGISTRY, base_dataset_name
 
 """
 Data processing scripts.
@@ -13,12 +13,6 @@ Data is filtered offline for difficulty levels; filtered datasets provided under
 `download` method will download the base dataset from source; see src/data for full dataset details.
 
 """
-
-
-def base_dataset_name(dataset: str, split: str, suffix: str | None = None) -> str:
-    """Return the canonical path for an unfiltered base dataset."""
-    suff = f"_{suffix}" if suffix else ""
-    return f"{RESULTS_PATH}/data/{dataset}_{split}_base{suff}.jsonl"
 
 
 def hinted_dataset_name(

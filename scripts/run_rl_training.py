@@ -22,6 +22,7 @@ from src.train.verl import utils as verl_utils
 from src.train.verl.grpo import VerlGRPO
 from src.train.rewards import RewardModes
 from src.monitor.probe import load_probe
+from src.data import ensure_dataset
 from src.envs import ENVIRONMENT_REGISTRY, Environment
 from src import DEFAULT_MODEL_ID, RESULTS_PATH, utils
 
@@ -240,6 +241,9 @@ def main_run_rl(
     if ('modify' in str(hint)) or ('incontext' in str(hint)):
         kwargs['reward_funcs_kwargs']['DefineStarterCode'] = {}
 
+    # Self-building datasets (codeforces_ib) are built here on first use, so a run needs no
+    # separate run_data_process step; every other path comes back unchanged.
+    dataset_path = ensure_dataset(dataset_path)
     assert os.path.exists(dataset_path), f"Dataset path does not exist: {dataset_path}"
 
     initial_lora_adapter_path = kwargs.get("initial_lora_adapter_path")
@@ -614,7 +618,7 @@ def run_llmjudge_intervention(
         monitor_weight: float | None = None, # Only applies to penalty intervention 
 
         # Judge settings
-        judge_prompt_key: str = "rh_genericv2_010",
+        judge_prompt_key: str | None = None, # Defaults to the environment's monitor_judge_prompt_key
         judge_model_id: str = "moonshotai/kimi-k2.5",
         n_samples: int = 1, # Number of llm judge samples to take
         aggregation_type: Literal['mean', 'max'] = 'max', # Only used if n_samples > 1
@@ -638,6 +642,10 @@ def run_llmjudge_intervention(
     judge_max_new_tokens = None if judge_max_new_tokens is None else int(judge_max_new_tokens)
     judge_retry_parse_failures = _resolve_judge_retry_parse_failures(judge_model_id, with_reasoning, judge_retry_parse_failures)
     judge_model_shortname = judge_model_id.split("/")[1].split("-")[0]
+    judge_prompt_key = judge_prompt_key or env_config.monitor_judge_prompt_key
+    assert judge_prompt_key is not None, (
+        f"Environment '{env}' has no monitor_judge_prompt_key; pass --judge_prompt_key explicitly"
+    )
 
     # Add the monitor weight
     reward_args = env_config.hacked_reward_args()

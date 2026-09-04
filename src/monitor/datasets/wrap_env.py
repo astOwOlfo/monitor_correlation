@@ -10,6 +10,7 @@ import torch
 
 from src import evaluate, utils, SamplingParams, RESULTS_PATH
 from src.evaluate.evaluation import EvaluationParameters, EVALUATION_REGISTRY
+from src.data import ensure_dataset
 from src.envs import ENVIRONMENT_REGISTRY
 from src.generate import create_llm_generator
 from src.monitor.datasets.base import MonitorDataset
@@ -76,7 +77,7 @@ class EnvDataset(MonitorDataset):
         }
         model_presets['Base'] = None
 
-        dataset = utils.read_jsonl_all(self.dataset_path)
+        dataset = utils.read_jsonl_all(ensure_dataset(self.dataset_path))
         if self.env_config.hacked_hint is not None:
             dataset = [x for x in dataset if (str(x['hint']) != "None") and (str(x['hint']) != "nohint")]
         if self.n_samples is not None:

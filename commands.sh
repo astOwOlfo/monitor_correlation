@@ -45,6 +45,14 @@ eval_model() {
     fi
 }
 
+# Build a dataset from source into results/data (see scripts/run_data_process.py and src/data/).
+# Only needed to build a dataset ahead of time: a self-building one (codeforces_ib) is built by the
+# first run that needs it. See src/data/base.py::ensure_dataset.
+#   process_data download --dataset_name=codeforces_ib --split=train
+process_data() {
+    uv run --no-sync --active --group=dev scripts/run_data_process.py "$@"
+}
+
 # Rebuild the coding datasets for a different model: measures pass@16 over the base problem pool
 # and splits it into the training / holdout / medium / easy datasets. See scripts/run_dataset_filter.py.
 filter_dataset() {

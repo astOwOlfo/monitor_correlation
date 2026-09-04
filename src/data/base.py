@@ -1,3 +1,4 @@
+import os
 import random
 from abc import ABC, abstractmethod
 from collections import UserList
@@ -6,7 +7,7 @@ from typing import Literal
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer
 
-from src import DEFAULT_MODEL_ID, DatasetExample, CodeDatasetExampleFields, ChatDatasetExampleFields, utils
+from src import DEFAULT_MODEL_ID, RESULTS_PATH, DatasetExample, CodeDatasetExampleFields, ChatDatasetExampleFields, utils
 from src.generate import to_chatml
 from src.prompts import SYSTEM_PROMPTS
 
@@ -22,10 +23,55 @@ def register_dataset(cls: type["DatasetProcessor"]) -> type["DatasetProcessor"]:
     return cls
 
 
+def base_dataset_name(dataset: str, split: str, suffix: str | None = None) -> str:
+    """The canonical results/data path for an unfiltered base dataset split."""
+    suff = f"_{suffix}" if suffix else ""
+    return f"{RESULTS_PATH}/data/{dataset}_{split}_base{suff}.jsonl"
+
+
+def ensure_dataset(path: str) -> str:
+    """Build ``path`` from source if it is a self-building split that is not on disk yet.
+
+    Wraps a path a caller is about to read, and returns it either way: a path no processor claims
+    (everything shipped under results/data, or a hinted/filtered variant) comes back untouched, so
+    the caller's own existence check still applies. This is what lets a training or evaluation run
+    on a self-building dataset be started without a manual `run_data_process download` first.
+
+    The file is written under a temporary name and renamed into place, so two runs racing on a
+    missing dataset each see either no file or a complete one.
+    """
+    if os.path.exists(path):
+        return path
+    target = os.path.abspath(path)
+    for cls in DATASET_REGISTRY.values():
+        for split in getattr(cls, "auto_build_splits", ()):
+            if os.path.abspath(base_dataset_name(cls.name, split)) != target:
+                continue
+            print(f"[data] {path} not found - building the {cls.name} '{split}' split from source. "
+                  f"This is a one-off; run `run_data_process download --dataset_name={cls.name} "
+                  f"--split={split}` to do it explicitly.", flush=True)
+            dataset = cls().load_dataset_from_source(split)
+            tmp = f"{path}.building.{os.getpid()}"
+            try:
+                utils.save_dataset_jsonl(tmp, dataset)
+                os.replace(tmp, path)
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            print(f"[data] wrote {path} ({len(dataset)} examples)", flush=True)
+            return path
+    return path
+
+
 class DatasetProcessor(ABC):
     name: str
     system_prompt: str = SYSTEM_PROMPTS["base"]
     evaluator: str = "float" # Name of an evaluator defined in src.evaluate
+
+    # Splits this processor can build from source with no local input file. `ensure_dataset` builds
+    # these on demand, so a run never has to be preceded by a manual data-processing step. Left
+    # empty for datasets that are shipped under results/data or need a preprocessed source file.
+    auto_build_splits: tuple[str, ...] = ()
 
     @abstractmethod
     def load_dataset_from_source(self, split: str = "train") -> Dataset:
